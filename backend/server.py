@@ -160,15 +160,21 @@ async def send_email(to_email: str, subject: str, body: str, is_html: bool = Fal
         context = ssl.create_default_context()
         
         # Try SSL first (port 465), then TLS (port 587)
+        # Try SSL first (port 465), then TLS (port 587)
         if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+            logger.info(f"Connecting to {smtp_host}:{smtp_port} using SSL...")
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=60) as server:
+                logger.info("SSL Connection established. Logging in...")
                 server.login(smtp_user, smtp_password)
+                logger.info("Logged in. Sending message...")
                 server.send_message(msg)
         else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+            logger.info(f"Connecting to {smtp_host}:{smtp_port} using TLS...")
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=60) as server:
                 server.ehlo()
                 server.starttls(context=context)
                 server.ehlo()
+                logger.info("TLS Connection established. Logging in...")
                 server.login(smtp_user, smtp_password)
                 server.send_message(msg)
         
