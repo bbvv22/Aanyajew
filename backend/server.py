@@ -62,17 +62,22 @@ JWT_EXPIRY_HOURS = 24
 app = FastAPI()
 
 # Initialize Database on Startup
+import cloudinary
+import cloudinary.uploader
+
+# Initialize Database on Startup
 @app.on_event("startup")
 async def startup_event():
     await create_tables()
 
-# Create uploads directory if it doesn't exist
-UPLOAD_DIR = "uploads"
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+# Cloudinary Configuration
+cloudinary.config( 
+  cloud_name = os.getenv('CLOUDINARY_CLOUD_NAME'), 
+  api_key = os.getenv('CLOUDINARY_API_KEY'), 
+  api_secret = os.getenv('CLOUDINARY_API_SECRET') 
+)
 
-# Mount static files
-app.mount("/static", StaticFiles(directory=UPLOAD_DIR), name="static")
+# CORS Setup
 
 # CORS Setup
 app.add_middleware(
@@ -727,30 +732,16 @@ async def upload_file(
     file: UploadFile = File(...),
     owner: UserDB = Depends(get_owner)
 ):
-    """Upload a file (image) to local storage"""
+    """Upload a file (image) to Cloudinary"""
     try:
-        # Generate safe filename
-        file_ext = os.path.splitext(file.filename)[1]
-        if not file_ext:
-            file_ext = ".jpg" # Default
-            
-        unique_filename = f"{uuid_lib.uuid4().hex}{file_ext}"
-        file_path = os.path.join(UPLOAD_DIR, unique_filename)
+        # Upload using Cloudinary SDK
+        # folder parameter organizes images in Cloudinary
+        result = cloudinary.uploader.upload(file.file, folder="anya-jewellery")
         
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        # Return URL
-        # Generate full URL based on request would be better, but relative or absolute path works too
-        # For now, return absolute URL assuming localhost
-        # In production, this should be dynamic or based on env var
-        file_url = f"http://localhost:8006/static/{unique_filename}"
-        
-        return {"url": file_url}
+        return {"url": result.get("secure_url")}
         
     except Exception as e:
-        print(f"Upload failed: {str(e)}")
+        print(f"Cloudinary Upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
 # ============================================
