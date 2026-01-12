@@ -137,26 +137,38 @@ async def send_email(to_email: str, subject: str, body: str, is_html: bool = Fal
     """
     pass
 
-async def send_otp_via_vercel(to_email: str, otp: str, brand: str = "Annya Jewellers"):
+async def send_email_via_vercel(to_email: str, subject: str = None, body: str = None, otp: str = None, brand: str = "Annya Jewellers"):
     """
-    Send OTP via Vercel Serverless Function (Mailer Microservice)
-    to bypass Render's SMTP port blocking.
+    Send email via Vercel Serverless Function (Mailer Microservice).
+    Supports both OTP (by passing 'otp') and generic emails (by passing 'subject' and 'body').
     """
     import httpx
     
-    mailer_url = os.environ.get("MAILER_URL") # e.g. https://your-project.vercel.app/api/send-otp-email
+    mailer_url = os.environ.get("MAILER_URL") 
     internal_key = os.environ.get("INTERNAL_KEY")
     
     if not mailer_url or not internal_key:
         logger.error("MAILER_URL or INTERNAL_KEY not set. Cannot send email.")
         return
 
+    payload = {
+        "to": to_email,
+        "brand": brand
+    }
+    
+    if otp:
+        payload["otp"] = otp
+    if subject:
+        payload["subject"] = subject
+    if body:
+        payload["html"] = body
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 mailer_url,
                 headers={"x-internal-key": internal_key},
-                json={"to": to_email, "otp": otp, "brand": brand},
+                json=payload,
             )
             response.raise_for_status()
             logger.info(f"Email sent via Vercel to {to_email}")
@@ -389,7 +401,7 @@ async def send_otp(data: OTPRequest, background_tasks: BackgroundTasks):
         try:
             # Use BackgroundTasks to send email immediately without blocking response
             background_tasks.add_task(
-                send_otp_via_vercel,
+                send_email_via_vercel,
                 to_email=data.email,
                 otp=otp
             )
@@ -2236,7 +2248,7 @@ async def place_order(
         """
         # Use simple background task wrapper to match async signature if needed, 
         # or just pass the async function to BackgroundTasks (FastAPI supports it)
-        background_tasks.add_task(send_email, current_user.email, f"Order Confirmation #{order_number}", email_body, True)
+        background_tasks.add_task(send_email_via_vercel, to_email=current_user.email, subject=f"Order Confirmation #{order_number}", body=email_body)
         
         # 4. Auto-save Address to Profile
         if order_data.shippingAddress:
