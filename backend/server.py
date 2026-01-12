@@ -398,8 +398,8 @@ class OTPVerify(BaseModel):
     otp: str
 
 @api_router.post("/auth/send-otp")
-async def send_otp(data: OTPRequest):
-    """Send OTP to email or phone"""
+async def send_otp(data: OTPRequest, background_tasks: BackgroundTasks):
+    """Send OTP to email or phone (non-blocking)"""
     import random
     
     # Support both email and phone
@@ -420,7 +420,9 @@ async def send_otp(data: OTPRequest):
     # Send OTP via email if email provided
     if data.email:
         try:
-            await send_email(
+            # Use BackgroundTasks to send email immediately without blocking response
+            background_tasks.add_task(
+                send_email_sync,
                 to_email=data.email,
                 subject="Your Annya Jewellers Verification Code",
                 body=f"""<div style="font-family: Arial, sans-serif; padding: 20px;">
@@ -433,7 +435,7 @@ async def send_otp(data: OTPRequest):
                 is_html=True
             )
         except Exception as e:
-            logger.error(f"Failed to send OTP email: {e}")
+            logger.error(f"Failed to schedule OTP email: {e}")
             # Still return success - OTP is stored, user can check terminal
     
     logger.info(f"OTP for {identifier}: {otp}")
