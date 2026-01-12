@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from './ui/button';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
@@ -12,7 +13,7 @@ const HeroSection = () => {
       title: 'Diamond Engagement Rings',
       description: 'Beautifully designed, certified diamond rings for the perfect proposal.',
       buttonText: 'DISCOVER',
-      buttonLink: '/collections/engagement-rings'
+      buttonLink: '/category/Engagement Rings'
     },
     {
       image: 'https://images.unsplash.com/photo-1628973116165-8b91e31b5984',
@@ -20,7 +21,7 @@ const HeroSection = () => {
       title: 'Eternity Rings',
       description: 'The ultimate symbol of endless love and commitment',
       buttonText: 'BROWSE',
-      buttonLink: '/collections/eternity-rings'
+      buttonLink: '/search?q=Eternity'
     }
   ];
 
@@ -56,11 +57,13 @@ const HeroSection = () => {
                 <p className="text-sm tracking-widest mb-2 uppercase">{slide.subtitle}</p>
                 <h2 className="text-3xl md:text-6xl font-serif mb-4">{slide.title}</h2>
                 <p className="text-lg mb-8">{slide.description}</p>
-                <Button
-                  className="bg-[#c4ad94] hover:bg-[#b39d84] text-white px-8 py-6 text-sm tracking-wider"
-                >
-                  {slide.buttonText}
-                </Button>
+                <Link to={slide.buttonLink}>
+                  <Button
+                    className="bg-[#c4ad94] hover:bg-[#b39d84] text-white px-8 py-6 text-sm tracking-wider"
+                  >
+                    {slide.buttonText}
+                  </Button>
+                </Link>
               </div>
             </div>
           </div>

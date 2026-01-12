@@ -82,7 +82,7 @@ const AdminLayout = () => {
 
     const navItems = [
         { path: '/admin', icon: LayoutDashboard, label: 'Dashboard', exact: true },
-        { path: '/admin/orders', icon: ShoppingCart, label: 'Orders', badge: 5 },
+        { path: '/admin/orders', icon: ShoppingCart, label: 'Orders' },
         { path: '/admin/products', icon: Package, label: 'Products' },
         {
             path: '/admin/inventory', icon: Warehouse, label: 'Inventory',

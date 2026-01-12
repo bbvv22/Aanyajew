@@ -1,0 +1,123 @@
+[
+  {
+    "name": "ENGAGEMENT RINGS",
+    "columns": [
+      {
+        "title": "Title",
+        "items": [
+          "Solitaire Diamond Rings",
+          "Halo Diamond Rings",
+          "Three Stone Diamond Rings",
+          "Lab Grown Diamond Rings",
+          "All Engagement Rings"
+        ]
+      },
+      {
+        "title": "DIAMOND CUT",
+        "items": [
+          "Round",
+          "Oval",
+          "Emerald",
+          "Pear",
+          "Other"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "DIAMOND JEWELLERY",
+    "columns": [
+      {
+        "title": "JEWELLERY TYPE",
+        "items": [
+          "Diamond Eternity Rings",
+          "Diamond Dress Rings",
+          "Diamond Pendants",
+          "Diamond Bracelets",
+          "Diamond Bangles",
+          "Diamond Earrings",
+          "Diamond Necklets",
+          "All Diamond Jewellery"
+        ]
+      },
+      {
+        "title": "GEMSTONE TYPE",
+        "items": [
+          "Diamond",
+          "Sapphire",
+          "Emerald",
+          "Ruby",
+          "Pearl",
+          "All Gemstone Jewellery"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "WEDDING RINGS",
+    "columns": [
+      {
+        "title": "LADIES WEDDING RINGS",
+        "items": [
+          "Diamond Rings",
+          "White Gold Rings",
+          "Yellow Gold Rings",
+          "Platinum Rings"
+        ]
+      },
+      {
+        "title": "GENTS WEDDING RINGS",
+        "items": [
+          "White Gold Rings",
+          "Yellow Gold Rings",
+          "Platinum Rings",
+          "All Wedding Rings"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "GOLD JEWELLERY",
+    "columns": [
+      {
+        "title": "Title",
+        "items": [
+          "Gold Pendants",
+          "Gold Bracelets",
+          "Gold Bangles",
+          "Gold Earrings",
+          "Gold Necklets"
+        ]
+      },
+      {
+        "title": "Title",
+        "items": [
+          "Gold Rings",
+          "Gold Chains",
+          "All Gold Jewellery"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "SILVER JEWELLERY",
+    "columns": [
+      {
+        "title": "Title",
+        "items": [
+          "Silver Rings",
+          "Silver Pendants",
+          "Silver Bracelets"
+        ]
+      },
+      {
+        "title": "Title",
+        "items": [
+          "Silver Earrings",
+          "Silver Necklets",
+          "All Silver Jewellery"
+        ]
+      }
+    ]
+  }
+]

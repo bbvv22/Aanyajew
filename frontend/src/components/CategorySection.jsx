@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { Link } from 'react-router-dom';
 import { Button } from './ui/button';
 
 const staticCategories = [
-  { id: 1, name: "Engagement Rings", link: "/collections/engagement-rings" },
-  { id: 2, name: "Wedding Jewellery", link: "/collections/wedding-jewellery" },
-  { id: 3, name: "Gemstone Jewellery", link: "/collections/gemstone-jewellery" }
+  { id: 1, name: "Engagement Rings", link: "/category/Engagement Rings" },
+  { id: 2, name: "Wedding Jewellery", link: "/category/Wedding Rings" },
+  { id: 3, name: "Diamond Jewellery", link: "/category/Diamond Jewellery" }
 ];
 
 const CategorySection = () => {
@@ -65,11 +66,13 @@ const CategorySection = () => {
               </div>
               <div className="p-8 text-center">
                 <h3 className="text-2xl font-serif text-gray-800 mb-4">{category.name}</h3>
-                <Button
-                  className="bg-[#c4ad94] hover:bg-[#b39d84] text-white px-6"
-                >
-                  BROWSE
-                </Button>
+                <Link to={category.link}>
+                  <Button
+                    className="bg-[#c4ad94] hover:bg-[#b39d84] text-white px-6"
+                  >
+                    BROWSE
+                  </Button>
+                </Link>
               </div>
             </div>
           ))}

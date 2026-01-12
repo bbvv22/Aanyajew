@@ -7,47 +7,27 @@ const staticBlogPosts = [
     id: 1,
     title: "What are Diamond 4C's?",
     excerpt: "Diamonds are evaluated based on four essential characteristics known as the 4Cs: Cut, Colour, Clarity, and Carat weight...",
-    link: "/blogs/diamond-4cs"
+    link: "/guides/diamond-4cs",
+    image: "/diamond_4cs_guide.png"
   },
   {
     id: 2,
     title: "Diamond Shapes Guide",
     excerpt: "When choosing an engagement ring, one crucial factor is the diamond or gemstone shape, which significantly affects the overall appearance...",
-    link: "/blogs/diamond-shapes"
+    link: "/guides/diamond-shapes",
+    image: "/diamond_shapes_guide.png"
   },
   {
     id: 3,
     title: "Ring Settings & Styles",
     excerpt: "Ring settings and styles play a crucial role in defining the overall appearance and character of a ring...",
-    link: "/blogs/ring-settings"
+    link: "/guides/ring-settings",
+    image: "/ring_settings_guide.png"
   }
 ];
 
 const BlogSection = () => {
-  const [posts, setPosts] = useState([]);
-
-  useEffect(() => {
-    const fetchBlogImages = async () => {
-      try {
-        const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8006';
-        const response = await axios.get(`${backendUrl}/api/products`);
-        const products = response.data;
-
-        const updatedPosts = staticBlogPosts.map(post => ({
-          ...post,
-          image: products.length > 0
-            ? products[Math.floor(Math.random() * products.length)].image
-            : "https://images.unsplash.com/photo-1762505464779-17f78cbfa8b4"
-        }));
-
-        setPosts(updatedPosts);
-      } catch (error) {
-        console.error("Error fetching blog images:", error);
-      }
-    };
-
-    fetchBlogImages();
-  }, []);
+  // No state or effects needed for static content
 
   return (
     <section className="py-16 bg-white">
@@ -62,7 +42,7 @@ const BlogSection = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
-          {posts.map((post) => (
+          {staticBlogPosts.map((post) => (
             <div key={post.id} className="group cursor-pointer">
               <div className="aspect-[4/3] overflow-hidden rounded-sm mb-4">
                 <img

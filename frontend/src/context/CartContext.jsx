@@ -12,6 +12,7 @@ export const useCart = () => {
 
 export const CartProvider = ({ children }) => {
     const [cartItems, setCartItems] = useState([]);
+    const [coupon, setCoupon] = useState(null);
     const [isLoaded, setIsLoaded] = useState(false);
 
     // Load cart from localStorage on mount
@@ -24,6 +25,16 @@ export const CartProvider = ({ children }) => {
                 console.error("Error parsing cart from localStorage:", e);
             }
         }
+
+        const savedCoupon = localStorage.getItem("coupon");
+        if (savedCoupon) {
+            try {
+                setCoupon(JSON.parse(savedCoupon));
+            } catch (e) {
+                console.error("Error parsing coupon from localStorage:", e);
+            }
+        }
+
         setIsLoaded(true);
     }, []);
 
@@ -33,6 +44,17 @@ export const CartProvider = ({ children }) => {
             localStorage.setItem("cart", JSON.stringify(cartItems));
         }
     }, [cartItems, isLoaded]);
+
+    // Save coupon to localStorage whenever it changes
+    useEffect(() => {
+        if (isLoaded) {
+            if (coupon) {
+                localStorage.setItem("coupon", JSON.stringify(coupon));
+            } else {
+                localStorage.removeItem("coupon");
+            }
+        }
+    }, [coupon, isLoaded]);
 
     const addToCart = (product, quantity = 1) => {
         setCartItems((prevItems) => {
@@ -66,6 +88,16 @@ export const CartProvider = ({ children }) => {
 
     const clearCart = () => {
         setCartItems([]);
+        setCoupon(null);
+        localStorage.removeItem("coupon");
+    };
+
+    const applyCoupon = (couponData) => {
+        setCoupon(couponData);
+    };
+
+    const removeCoupon = () => {
+        setCoupon(null);
     };
 
     const getCartTotal = () => {
@@ -82,10 +114,13 @@ export const CartProvider = ({ children }) => {
 
     const value = {
         cartItems,
+        coupon,
         addToCart,
         removeFromCart,
         updateQuantity,
         clearCart,
+        applyCoupon,
+        removeCoupon,
         getCartTotal,
         getCartCount,
         isInCart,

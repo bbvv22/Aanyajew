@@ -135,8 +135,8 @@ const AdminDashboard = () => {
         {
             title: 'Gross Sales',
             value: formatCurrency(stats.gross_sales),
-            change: '+12.5%',
-            positive: true,
+            change: stats.gross_sales_change,
+            positive: !stats.gross_sales_change.includes('-'),
             icon: DollarSign,
             color: 'from-blue-500 to-blue-600',
             tooltip: 'Total revenue before any deductions'
@@ -144,8 +144,8 @@ const AdminDashboard = () => {
         {
             title: 'Net Sales',
             value: formatCurrency(stats.net_sales),
-            change: '+10.2%',
-            positive: true,
+            change: stats.net_sales_change,
+            positive: !stats.net_sales_change.includes('-'),
             icon: DollarSign,
             color: 'from-emerald-500 to-emerald-600',
             tooltip: 'Gross sales minus discounts and refunds'
@@ -153,8 +153,8 @@ const AdminDashboard = () => {
         {
             title: 'Gross Profit',
             value: formatCurrency(stats.gross_profit),
-            change: '+8.7%',
-            positive: true,
+            change: stats.gross_profit_change,
+            positive: !stats.gross_profit_change.includes('-'),
             icon: TrendingUp,
             color: 'from-purple-500 to-purple-600',
             tooltip: 'Net sales minus cost of goods (material + making + other)'
@@ -162,8 +162,8 @@ const AdminDashboard = () => {
         {
             title: 'Net Profit',
             value: formatCurrency(stats.net_profit),
-            change: '+5.3%',
-            positive: true,
+            change: stats.net_profit_change,
+            positive: !stats.net_profit_change.includes('-'),
             icon: TrendingUp,
             color: 'from-amber-500 to-amber-600',
             tooltip: 'Gross profit minus payment fees, shipping, and overhead'

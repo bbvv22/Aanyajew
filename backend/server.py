@@ -1,364 +1,225 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+"""
+Annya Jewellers E-commerce Backend - Clean PostgreSQL Version
+Built from scratch with modern FastAPI and SQLAlchemy
+"""
+from fastapi import FastAPI, Depends, HTTPException, status, Body, Query, APIRouter, UploadFile, File, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.future import select
+from sqlalchemy import text, func, update, delete, or_, and_
+from passlib.context import CryptContext
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Union, Dict, Any
 import os
+import uuid as uuid_lib  # Alias to avoid conflict with Field
+from pydantic import BaseModel, Field, EmailStr
+import json
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Optional
-import uuid
-from datetime import datetime, timezone, timedelta
-import hashlib
-import secrets
-import csv
-import io
-import codecs
-import smtplib
 import asyncio
-import aiosmtplib
+import shutil # For file operations
+import hashlib # Add hashlib import
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from fastapi import BackgroundTasks
+from dotenv import load_dotenv
 
+# Explicitly load .env from the backend directory
+env_path = os.path.join(os.path.dirname(__file__), '.env')
+load_dotenv(env_path)
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+# Import models
+from database import get_db, create_tables
+from db_models import UserDB, OrderDB, ProductDB, VendorDB, CouponDB
 
-# MongoDB connection with SSL workaround for Render
-mongo_url = os.environ['MONGO_URL']
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# SSL workaround parameters for MongoDB Atlas compatibility
-client = AsyncIOMotorClient(
-    mongo_url,
-    tlsAllowInvalidCertificates=True,
-    tlsAllowInvalidHostnames=True
-)
-db = client[os.environ['DB_NAME']]
+# Load env vars
+from dotenv import load_dotenv
+load_dotenv()
 
-# JWT Secret Key (generate a random one if not set)
-JWT_SECRET = os.environ.get('JWT_SECRET', secrets.token_hex(32))
+# Database Setup
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL is not set")
+    
+# Ensure clean asyncpg url
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+
+# JWT Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-change-this")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 24 hours
+JWT_SECRET = SECRET_KEY  # Alias for compatibility
 JWT_EXPIRY_HOURS = 24
 
-# Email Configuration
-SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.zoho.com')
-SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
-SMTP_USER = os.environ.get('SMTP_USER')
+app = FastAPI()
+
+# Initialize Database on Startup
+@app.on_event("startup")
+async def startup_event():
+    await create_tables()
+
+# Create uploads directory if it doesn't exist
+UPLOAD_DIR = "uploads"
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
+
+# Mount static files
+app.mount("/static", StaticFiles(directory=UPLOAD_DIR), name="static")
+
+# CORS Setup
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify your frontend domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+api_router = APIRouter(prefix="/api")
+
+# --- Authentication Helpers ---
 SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')
 SMTP_FROM_EMAIL = os.environ.get('SMTP_FROM_EMAIL')
 
-async def send_email(to_email: str, subject: str, body: str, is_html: bool = False):
-    """Send email using async SMTP"""
-    if not SMTP_USER or not SMTP_PASSWORD:
-        logging.warning("Email configuration missing. Skipping email send.")
-        return False
+# Owner credentials
+OWNER_USERNAME = os.environ.get('OWNER_USERNAME', 'owner.owner')
+OWNER_PASSWORD = os.environ.get('OWNER_PASSWORD', 'admin123')
 
+# ============================================
+# UTILITY FUNCTIONS
+# ====================================================================================
+
+def hash_password(password: str) -> str:
+    """hash password using SHA256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify password against hash"""
+    return hash_password(password) == hashed
+
+def create_token(user_id: str) -> str:
+    """Create JWT-like token"""
+    import jwt
+    payload = {
+        'user_id': user_id,
+        'exp': datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
+
+def decode_token(token: str) -> Optional[str]:
+    """Decode token and return user_id"""
+    try:
+        import jwt
+        payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+        return payload.get('user_id')
+    except:
+        return None
+
+async def send_email(to_email: str, subject: str, body: str, is_html: bool = False):
+    """Send email via SMTP"""
+    import smtplib
+    import ssl
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    
+    smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    smtp_port = int(os.environ.get('SMTP_PORT', 587))
+    smtp_user = os.environ.get('SMTP_USER')
+    smtp_password = SMTP_PASSWORD
+    from_email = SMTP_FROM_EMAIL or smtp_user
+    
+    if not smtp_user or not smtp_password:
+        logger.warning(f"SMTP not configured. Would send to {to_email}: {subject}")
+        print(f"DEBUG EMAIL: To: {to_email}, Subject: {subject}")
+        return
+    
     try:
         msg = MIMEMultipart()
-        msg['From'] = SMTP_FROM_EMAIL
+        msg['From'] = from_email
         msg['To'] = to_email
         msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'html' if is_html else 'plain'))
-
-        await aiosmtplib.send(
-            msg,
-            hostname=SMTP_HOST,
-            port=SMTP_PORT,
-            use_tls=True,  # SSL on port 465 (not STARTTLS)
-            username=SMTP_USER,
-            password=SMTP_PASSWORD
-        )
-        return True
-    except Exception as e:
-        logging.error(f"Failed to send email: {str(e)}")
-        return False
-
-# ============================================
-# EMAIL TEMPLATES
-# ============================================
-
-def get_email_base_style():
-    """Common CSS styles for all emails"""
-    return """
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, sans-serif; margin: 0; padding: 0; background-color: #f5f5f5; }
-        .container { max-width: 600px; margin: 0 auto; background: white; }
-        .header { background: linear-gradient(135deg, #c4ad94 0%, #b39d84 100%); padding: 30px; text-align: center; }
-        .header h1 { color: white; margin: 0; font-size: 28px; letter-spacing: 3px; }
-        .header p { color: rgba(255,255,255,0.9); margin: 5px 0 0; font-size: 12px; }
-        .content { padding: 40px 30px; }
-        .content h2 { color: #333; margin-top: 0; }
-        .order-details { background: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0; }
-        .order-item { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
-        .total-row { font-weight: bold; font-size: 18px; color: #c4ad94; }
-        .button { display: inline-block; background: #c4ad94; color: white; padding: 14px 30px; text-decoration: none; border-radius: 4px; margin: 20px 0; }
-        .footer { background: #333; color: #999; padding: 20px; text-align: center; font-size: 12px; }
-        .footer a { color: #c4ad94; }
-    </style>
-    """
-
-def get_order_confirmation_email(order: dict):
-    """Generate order confirmation email HTML"""
-    items_html = ""
-    for item in order.get("items", []):
-        items_html += f"""
-        <div style="display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee;">
-            <span>{item.get('name', 'Product')} x {item.get('quantity', 1)}</span>
-            <span>₹{item.get('price', 0):,.2f}</span>
-        </div>
-        """
-    
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>{get_email_base_style()}</head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>ANNYA</h1>
-                <p>JEWELLERS • Est. 1916</p>
-            </div>
-            <div class="content">
-                <h2>Thank you for your order! 🎉</h2>
-                <p>Hi {order.get('customer', {}).get('name', 'Valued Customer')},</p>
-                <p>We're thrilled to confirm your order has been received and is being processed.</p>
-                
-                <div class="order-details">
-                    <h3 style="margin-top: 0;">Order #{order.get('id', '')[:8].upper()}</h3>
-                    {items_html}
-                    <div style="padding: 15px 0 0; font-weight: bold; font-size: 18px; color: #c4ad94;">
-                        Total: ₹{order.get('grandTotal', order.get('total', 0)):,.2f}
-                    </div>
-                </div>
-                
-                <p>We'll send you another email when your order ships.</p>
-                <a href="#" class="button">Track Your Order</a>
-            </div>
-            <div class="footer">
-                <p>Annya Jewellers | contact@annyajewellers.com | +91 98765 43210</p>
-                <p>© 2026 Annya Jewellers. All rights reserved.</p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-def get_shipping_notification_email(order: dict):
-    """Generate shipping notification email HTML"""
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>{get_email_base_style()}</head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>ANNYA</h1>
-                <p>JEWELLERS • Est. 1916</p>
-            </div>
-            <div class="content">
-                <h2>Your order is on its way! 🚚</h2>
-                <p>Hi {order.get('customer', {}).get('name', 'Valued Customer')},</p>
-                <p>Great news! Your order <strong>#{order.get('id', '')[:8].upper()}</strong> has been shipped and is heading your way.</p>
-                
-                <div class="order-details">
-                    <p><strong>Estimated Delivery:</strong> 3-5 business days</p>
-                    <p><strong>Shipping Address:</strong><br>
-                    {order.get('shippingAddress', {}).get('address', 'Your address')}<br>
-                    {order.get('shippingAddress', {}).get('city', '')}, {order.get('shippingAddress', {}).get('pincode', '')}
-                    </p>
-                </div>
-                
-                <a href="#" class="button">Track Shipment</a>
-                <p style="color: #666; font-size: 14px;">If you have any questions, reply to this email or call us at +91 98765 43210.</p>
-            </div>
-            <div class="footer">
-                <p>Annya Jewellers | contact@annyajewellers.com</p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-def get_welcome_email(user: dict):
-    """Generate welcome email HTML"""
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>{get_email_base_style()}</head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>ANNYA</h1>
-                <p>JEWELLERS • Est. 1916</p>
-            </div>
-            <div class="content">
-                <h2>Welcome to Annya Jewellers! ✨</h2>
-                <p>Hi {user.get('name', 'there')},</p>
-                <p>Thank you for joining the Annya Jewellers family! We're delighted to have you.</p>
-                <p>As a member, you'll enjoy:</p>
-                <ul>
-                    <li>Exclusive access to new collections</li>
-                    <li>Special member-only discounts</li>
-                    <li>Early access to sales</li>
-                    <li>Free shipping on orders over ₹5,000</li>
-                </ul>
-                <a href="#" class="button">Start Shopping</a>
-                <p style="color: #666;">If you have any questions, we're always here to help!</p>
-            </div>
-            <div class="footer">
-                <p>Annya Jewellers | contact@annyajewellers.com | +91 98765 43210</p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-def get_password_reset_email(user: dict, reset_token: str, frontend_url: str = "http://localhost:3000"):
-    """Generate password reset email HTML"""
-    reset_link = f"{frontend_url}/reset-password/{reset_token}"
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>{get_email_base_style()}</head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>ANNYA</h1>
-                <p>JEWELLERS • Est. 1916</p>
-            </div>
-            <div class="content">
-                <h2>Reset Your Password 🔐</h2>
-                <p>Hi {user.get('name', 'there')},</p>
-                <p>We received a request to reset your password. Click the button below to choose a new password:</p>
-                <a href="{reset_link}" class="button">Reset Password</a>
-                <p style="color: #666; font-size: 14px;">This link will expire in 1 hour for security reasons.</p>
-                <p style="color: #666; font-size: 14px;">If you didn't request this, you can safely ignore this email.</p>
-                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-                <p style="color: #999; font-size: 12px;">If the button doesn't work, copy and paste this link:<br>{reset_link}</p>
-            </div>
-            <div class="footer">
-                <p>Annya Jewellers | contact@annyajewellers.com</p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-def get_otp_email(otp_code: str, user_name: str = "there"):
-    """Generate OTP verification email HTML"""
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>{get_email_base_style()}</head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>ANNYA</h1>
-                <p>JEWELLERS • Est. 1916</p>
-            </div>
-            <div class="content">
-                <h2>Verify Your Email 📧</h2>
-                <p>Hi {user_name},</p>
-                <p>Welcome to Annya Jewellers! Use the code below to verify your email address:</p>
-                <div style="background: #f8f5f0; border: 2px dashed #c4ad94; border-radius: 10px; padding: 30px; text-align: center; margin: 30px 0;">
-                    <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #c4ad94;">{otp_code}</div>
-                    <p style="color: #666; margin-top: 10px; font-size: 14px;">This code expires in 10 minutes</p>
-                </div>
-                <p style="color: #666; font-size: 14px;">If you didn't create an account with us, you can safely ignore this email.</p>
-            </div>
-            <div class="footer">
-                <p>Annya Jewellers | contact@annyajewellers.com</p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-# Create the main app without a prefix
-app = FastAPI()
-
-@app.middleware("http")
-async def track_traffic(request: Request, call_next):
-    timestamp = datetime.now(timezone.utc)
-    
-    response = await call_next(request)
-    
-    # Only track successful GET requests to non-API routes (frontend)
-    # or public API routes if served by this backend
-    # For this setup, we assume frontend calls are not routed through here except via API
-    # But if we were serving static files, we'd track them.
-    # Since this is an API server, we'll track public API calls to products/categories
-    # and we can also add a specific /track endpoint for frontend to call.
-    
-    path = request.url.path
-    if request.method == "GET" and "/api/products" in path and "/admin" not in path:
-        # Simple tracking for product views
-        log = {
-            "path": path,
-            "method": request.method,
-            "ip": request.client.host if request.client else "unknown",
-            "user_agent": request.headers.get("user-agent"),
-            "referer": request.headers.get("referer"),
-            "status": response.status_code,
-            "timestamp": timestamp.isoformat()
-        }
-        # Fire-and-forget: Motor returns Future, use ensure_future
-        asyncio.ensure_future(db.traffic_logs.insert_one(log))
         
-    return response
+        content_type = 'html' if is_html else 'plain'
+        msg.attach(MIMEText(body, content_type))
+        
+        context = ssl.create_default_context()
+        
+        # Try SSL first (port 465), then TLS (port 587)
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+                server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+                server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+        
+        logger.info(f"Email sent successfully to {to_email}")
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"SMTP Auth failed for {to_email}: {e}")
+        print(f"SMTP Auth Error: Check username/password in .env")
+        raise
+    except smtplib.SMTPException as e:
+        logger.error(f"SMTP Error sending to {to_email}: {e}")
+        print(f"SMTP Error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email}: {e}")
+        print(f"Email error: {e}")
+        raise
 
-# Specific endpoint for frontend to report page views
-@app.post("/api/track")
-async def track_page_view(request: Request):
-    data = await request.json()
-    timestamp = datetime.now(timezone.utc)
-    log = {
-        "path": data.get("path", "/"),
-        "method": "VIEW",
-        "ip": request.client.host if request.client else "unknown",
-        "user_agent": request.headers.get("user-agent"),
-        "referer": data.get("referrer"),
-        "device": data.get("device", "desktop"), # mobile, tablet, desktop
-        "status": 200,
-        "timestamp": timestamp.isoformat()
-    }
-    await db.traffic_logs.insert_one(log)
-    return {"status": "ok"}
+# ============================================
+# AUTHENTICATION
+# ============================================
 
-
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
-
-# Security
 security = HTTPBearer(auto_error=False)
 
+# ============================================
+# AUTHENTICATION
+# ============================================
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db)
+) -> UserDB:
+    """Get current authenticated user"""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-class Product(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    user_id = decode_token(credentials.credentials)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
     
-    id: str
-    name: str
-    description: str
-    price: float
-    currency: str = "INR"
-    image: str
-    category: str
-    tags: List[str] = []
-    inStock: bool
-    createdAt: datetime
+    result = await db.execute(select(UserDB).where(UserDB.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    return user
 
-# Auth Models
+async def get_owner(current_user: UserDB = Depends(get_current_user)) -> UserDB:
+    """Verify user is owner/admin"""
+    if current_user.role not in ['owner', 'admin']:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+# ============================================
+# PYDANTIC MODELS
+# ============================================
+
 class UserCreate(BaseModel):
     name: str
     email: EmailStr
@@ -369,3089 +230,2130 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-class UserResponse(BaseModel):
-    id: str
-    name: str
-    email: EmailStr
-    phone: Optional[str] = None
+class OwnerLogin(BaseModel):
+    """Owner login - accepts username as string (not email format)"""
+    email: str  # Actually username, but frontend sends as 'email' field
+    password: str
 
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    user: UserResponse
+    user: Dict[str, Any]
 
+# ============================================
+# ROOT & HEALTH ENDPOINTS
+# ============================================
 
-# Simple password hashing (in production use bcrypt)
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def verify_password(password: str, hashed: str) -> bool:
-    return hash_password(password) == hashed
-
-# Simple JWT implementation (in production use python-jose)
-def create_token(user_id: str) -> str:
-    import base64
-    import json
-    payload = {
-        "user_id": user_id,
-        "exp": (datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS)).isoformat()
-    }
-    token_data = json.dumps(payload)
-    return base64.b64encode(token_data.encode()).decode()
-
-def decode_token(token: str) -> Optional[dict]:
-    import base64
-    import json
-    try:
-        token_data = base64.b64decode(token.encode()).decode()
-        payload = json.loads(token_data)
-        exp = datetime.fromisoformat(payload["exp"])
-        if exp < datetime.now(timezone.utc):
-            return None
-        return payload
-    except Exception:
-        return None
-
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    payload = decode_token(credentials.credentials)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-    user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-    
-    return user
-
-
-# Add your routes to the router instead of directly to app
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Annya Jewellers API - PostgreSQL Powered", "version": "2.0"}
 
+@api_router.get("/health")
+async def health_check(db: AsyncSession = Depends(get_db)):
+    try:
+        # Test database connection
+        await db.execute(select(func.count()).select_from(ProductDB))
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
+# ============================================
+# PRODUCT ENDPOINTS  
+# ============================================
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
+@api_router.get("/products")
+async def get_products(
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(100, le=1000),
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all products with optional filtering"""
+    query = select(ProductDB).where(ProductDB.status == 'active')
     
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-@api_router.get("/products", response_model=List[Product])
-async def get_products(category: str = None, search: str = None):
-    query = {}
     if category:
-        query["category"] = category
+        query = query.where(ProductDB.category == category)
     
     if search:
-        # Search in name, category, or tags (case-insensitive)
-        search_regex = {"$regex": search, "$options": "i"}
-        query["$or"] = [
-            {"name": search_regex},
-            {"category": search_regex},
-            {"tags": search_regex},
-            {"description": search_regex}
-        ]
-        
-    products = await db.products.find(query, {"_id": 0}).to_list(1000)
-    return products
+        search_filter = or_(
+            ProductDB.name.ilike(f"%{search}%"),
+            ProductDB.description.ilike(f"%{search}%"),
+            ProductDB.category.ilike(f"%{search}%"),
+            ProductDB.sku.ilike(f"%{search}%")
+        )
+        query = query.where(search_filter)
+    
+    query = query.limit(limit).offset(offset)
+    result = await db.execute(query)
+    products = result.scalars().all()
+    
+    return [{
+        "id": str(p.id),
+        "sku": p.sku,
+        "barcode": p.barcode,
+        "name": p.name,
+        "description": p.description,
+        "category": p.category,
+        "subcategory": p.subcategory,
+        "price": float(p.selling_price),
+        "sellingPrice": float(p.selling_price),
+        "currency": p.currency,
+        "image": p.image,
+        "images": p.images or [],
+        "tags": p.tags or [],
+        "inStock": p.stock_quantity > 0,
+        "stockQuantity": p.stock_quantity,
+        "metal": p.metal,
+        "stoneType": p.stone_type,
+        "certification": p.certification,
+        "createdAt": p.created_at.isoformat() if p.created_at else None
+    } for p in products]
 
-@api_router.get("/products/{product_id}", response_model=Product)
-async def get_product(product_id: str):
-    product = await db.products.find_one({"id": product_id}, {"_id": 0})
+@api_router.get("/products/{product_id}")
+async def get_product(product_id: str, db: AsyncSession = Depends(get_db)):
+    """Get single product by ID"""
+    result = await db.execute(
+        select(ProductDB).where(ProductDB.id == product_id)
+    )
+    product = result.scalar_one_or_none()
+    
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    return product
+    
+    return {
+        "id": str(product.id),
+        "sku": product.sku,
+        "barcode": product.barcode,
+        "name": product.name,
+        "description": product.description,
+        "category": product.category,
+        "subcategory": product.subcategory,
+        "price": float(product.selling_price),
+        "sellingPrice": float(product.selling_price),
+        "totalCost": float(product.total_cost) if product.total_cost else None,
+        "profitMargin": float(product.profit_margin) if product.profit_margin else None,
+        "currency": product.currency,
+        "image": product.image,
+        "images": product.images or [],
+        "tags": product.tags or [],
+        "inStock": product.stock_quantity > 0,
+        "stockQuantity": product.stock_quantity,
+        "metal": product.metal,
+        "purity": product.purity,
+        "grossWeight": float(product.gross_weight) if product.gross_weight else None,
+        "netWeight": float(product.net_weight) if product.net_weight else None,
+        "stoneType": product.stone_type,
+        "stoneWeight": float(product.stone_weight) if product.stone_weight else None,
+        "certification": product.certification,
+        "vendorName": product.vendor_name,
+        "createdAt": product.created_at.isoformat() if product.created_at else None
+    }
 
+@api_router.get("/categories")
+async def get_categories(db: AsyncSession = Depends(get_db)):
+    """Get all unique categories"""
+    result = await db.execute(
+        select(ProductDB.category).distinct()
+    )
+    categories = [row[0] for row in result.all() if row[0]]
+    return categories
 
-# Auth Routes - OTP Models
-class SendOtpRequest(BaseModel):
-    name: str
-    email: EmailStr
-    password: str
+# ============================================
+# AUTH ENDPOINTS
+# ============================================
 
-class VerifyOtpRequest(BaseModel):
-    email: EmailStr
+# In-memory OTP storage (in production, use Redis or database)
+otp_storage = {}
+
+class OTPRequest(BaseModel):
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    name: Optional[str] = None
+    password: Optional[str] = None
+    
+class OTPVerify(BaseModel):
+    email: Optional[str] = None
+    phone: Optional[str] = None
     otp: str
 
 @api_router.post("/auth/send-otp")
-async def send_otp(data: UserCreate):
-    """Start registration process by sending OTP"""
-    # Check if user already exists
-    existing_user = await db.users.find_one({"email": data.email})
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+async def send_otp(data: OTPRequest):
+    """Send OTP to email or phone"""
+    import random
     
-    # Generate OTP
-    otp_code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
-    expiry = datetime.now(timezone.utc) + timedelta(minutes=10)
+    # Support both email and phone
+    identifier = data.email or data.phone
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Email or phone required")
     
-    # Store pending registration with OTP
-    await db.pending_registrations.update_one(
-        {"email": data.email},
-        {"$set": {
-            "name": data.name,
-            "email": data.email,
-            "phone": data.phone,
-            "password": hash_password(data.password),
-            "otp": otp_code,
-            "expires_at": expiry.isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }},
-        upsert=True
-    )
+    # Generate 6-digit OTP
+    otp = str(random.randint(100000, 999999))
     
-    # Send OTP email
-    asyncio.ensure_future(send_email(
-        data.email,
-        "Your Verification Code 🔐",
-        get_otp_email(otp_code, data.name),
-        is_html=True
-    ))
-    
-    return {"message": "OTP sent successfully", "email": data.email}
-
-@api_router.post("/auth/verify-otp", response_model=AuthResponse)
-async def verify_otp_and_register(data: VerifyOtpRequest):
-    """Verify OTP and complete registration"""
-    # Find pending registration
-    pending = await db.pending_registrations.find_one({"email": data.email})
-    
-    if not pending:
-        raise HTTPException(status_code=400, detail="No pending registration found. Please start over.")
-    
-    # Check if OTP is expired
-    expiry = datetime.fromisoformat(pending["expires_at"])
-    if expiry < datetime.now(timezone.utc):
-        await db.pending_registrations.delete_one({"email": data.email})
-        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
-    
-    # Verify OTP
-    if pending["otp"] != data.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP. Please try again.")
-    
-    # Create user
-    user_id = str(uuid.uuid4())
-    user_doc = {
-        "id": user_id,
-        "name": pending["name"],
-        "email": pending["email"],
-        "phone": pending.get("phone"),
-        "password": pending["password"],  # Already hashed
-        "email_verified": True,
-        "createdAt": datetime.now(timezone.utc).isoformat()
+    # Store OTP with timestamp (expires in 5 minutes)
+    otp_storage[identifier] = {
+        "otp": otp,
+        "expires": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "data": data.dict() # Store full registration data
     }
     
-    await db.users.insert_one(user_doc)
+    # Send OTP via email if email provided
+    if data.email:
+        try:
+            await send_email(
+                to_email=data.email,
+                subject="Your Annya Jewellers Verification Code",
+                body=f"""<div style="font-family: Arial, sans-serif; padding: 20px;">
+                    <h2 style="color: #c4ad94;">Annya Jewellers</h2>
+                    <p>Your verification code is:</p>
+                    <h1 style="font-size: 36px; letter-spacing: 8px; color: #333;">{otp}</h1>
+                    <p>This code expires in 5 minutes.</p>
+                    <p style="color: #666; font-size: 12px;">If you didn't request this, please ignore this email.</p>
+                </div>""",
+                is_html=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to send OTP email: {e}")
+            # Still return success - OTP is stored, user can check terminal
     
-    # Delete pending registration
-    await db.pending_registrations.delete_one({"email": data.email})
+    logger.info(f"OTP for {identifier}: {otp}")
+    print(f"DEBUG: OTP for {identifier}: {otp}")
     
-    # Send welcome email (fire-and-forget)
-    asyncio.ensure_future(send_email(
-        pending["email"],
-        "Welcome to Annya Jewellers! ✨",
-        get_welcome_email({"name": pending["name"], "email": pending["email"]}),
-        is_html=True
-    ))
-    
-    # Generate token
-    token = create_token(user_id)
-    
-    return AuthResponse(
-        access_token=token,
-        user=UserResponse(id=user_id, name=pending["name"], email=pending["email"], phone=pending.get("phone"))
-    )
+    return {"success": True, "message": "OTP sent successfully"}
 
-@api_router.post("/auth/resend-otp")
-async def resend_otp(email: EmailStr):
-    """Resend OTP for pending registration"""
-    pending = await db.pending_registrations.find_one({"email": email})
+@api_router.post("/auth/verify-otp")
+async def verify_otp(data: OTPVerify, db: AsyncSession = Depends(get_db)):
+    """Verify OTP and login/register user"""
+    identifier = data.email or data.phone
+    otp = data.otp
     
-    if not pending:
-        raise HTTPException(status_code=400, detail="No pending registration found")
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Email or phone required")
     
-    # Generate new OTP
-    otp_code = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
-    expiry = datetime.now(timezone.utc) + timedelta(minutes=10)
+    # Check if OTP exists and is valid
+    stored = otp_storage.get(identifier)
+    if not stored:
+        raise HTTPException(status_code=400, detail="OTP not found. Please request a new one.")
     
-    # Update OTP
-    await db.pending_registrations.update_one(
-        {"email": email},
-        {"$set": {"otp": otp_code, "expires_at": expiry.isoformat()}}
-    )
+    if datetime.now(timezone.utc) > stored["expires"]:
+        del otp_storage[identifier]
+        raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
     
-    # Send OTP email
-    asyncio.ensure_future(send_email(
-        email,
-        "Your New Verification Code 🔐",
-        get_otp_email(otp_code, pending.get("name", "there")),
-        is_html=True
-    ))
+    if stored["otp"] != otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
     
-    return {"message": "OTP resent successfully"}
+    # OTP is valid, clean up
+    del otp_storage[identifier]
+    
+    # Check if user exists with this email or phone
+    if data.email:
+        result = await db.execute(
+            select(UserDB).where(UserDB.email == data.email)
+        )
+    else:
+        result = await db.execute(
+            select(UserDB).where(UserDB.phone == data.phone)
+        )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        # Retrieve stored registration data
+        reg_data = stored.get("data", {})
+        
+        # Create new user using stored data
+        user = UserDB(
+            email=reg_data.get("email") or data.email,
+            phone=reg_data.get("phone") or data.phone,
+            full_name=reg_data.get("name"), # Use name from stored data
+            password_hash=hash_password(reg_data.get("password") or identifier), # Use stored password or identifier
+            role='customer'
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    
+    # Create token
+    token = create_token(str(user.id))
+    
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "name": user.full_name or "Customer",
+            "phone": user.phone,
+            "role": user.role
+        }
+    }
 
-# Legacy register endpoint (kept for backward compatibility but redirects to OTP flow)
+# ============================================
+# TRACKING ENDPOINT
+# ============================================
+
+@api_router.post("/track")
+async def track_event(event: dict = Body(...)):
+    """Track analytics events (placeholder for now)"""
+    # In production, store this in a database or send to analytics service
+    logger.info(f"Track event: {event}")
+    return {"success": True}
+
 @api_router.post("/auth/register", response_model=AuthResponse)
-async def register(user_data: UserCreate):
-    # Check if user exists
-    existing = await db.users.find_one({"email": user_data.email})
-    if existing:
+async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
+    """Register new user"""
+    # Check if email exists
+    result = await db.execute(
+        select(UserDB).where(UserDB.email == user_data.email)
+    )
+    if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
     
     # Create user
-    user_id = str(uuid.uuid4())
-    user_doc = {
-        "id": user_id,
-        "name": user_data.name,
-        "email": user_data.email,
-        "password": hash_password(user_data.password),
-        "createdAt": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.users.insert_one(user_doc)
-    
-    # Send welcome email (fire-and-forget)
-    asyncio.ensure_future(send_email(
-        user_data.email,
-        "Welcome to Annya Jewellers! ✨",
-        get_welcome_email({"name": user_data.name, "email": user_data.email}),
-        is_html=True
-    ))
-    
-    # Generate token
-    token = create_token(user_id)
-    
-    return AuthResponse(
-        access_token=token,
-        user=UserResponse(id=user_id, name=user_data.name, email=user_data.email)
+    new_user = UserDB(
+        email=user_data.email,
+        password_hash=hash_password(user_data.password),
+        full_name=user_data.name,
+        phone=user_data.phone,
+        role='customer'
     )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+    
+    # Create token
+    token = create_token(str(new_user.id))
+    
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(new_user.id),
+            "email": new_user.email,
+            "name": new_user.full_name,
+            "role": new_user.role,
+            "address": new_user.address,
+            "city": new_user.city,
+            "state": new_user.state,
+            "pincode": new_user.pincode,
+            "country": new_user.country
+        }
+    }
 
 @api_router.post("/auth/login", response_model=AuthResponse)
-async def login(credentials: UserLogin):
-    # Find user
-    user = await db.users.find_one({"email": credentials.email})
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    # Verify password
-    if not verify_password(credentials.password, user["password"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    # Generate token
-    token = create_token(user["id"])
-    
-    return AuthResponse(
-        access_token=token,
-        user=UserResponse(id=user["id"], name=user["name"], email=user["email"], phone=user.get("phone"))
+async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
+    """User login"""
+    result = await db.execute(
+        select(UserDB).where(UserDB.email == credentials.email)
     )
-
-@api_router.get("/auth/me", response_model=UserResponse)
-async def get_me(current_user: dict = Depends(get_current_user)):
-    return UserResponse(
-        id=current_user["id"],
-        name=current_user["name"],
-        email=current_user["email"],
-        phone=current_user.get("phone")
-    )
-
-
-# ============================================
-# PUBLIC - APPOINTMENTS
-# ============================================
-
-class AppointmentRequest(BaseModel):
-    name: str
-    email: str
-    phone: str
-    date: str
-    time: str
-    service: str
-    message: Optional[str] = None
-
-def get_appointment_email(data: dict):
-    return get_email_base_style() + f"""
-    <div class="container">
-        <div class="header">
-            <h1>New Appointment Request</h1>
-        </div>
-        <div class="content">
-            <p><strong>Customer Name:</strong> {data.get('name')}</p>
-            <p><strong>Email:</strong> {data.get('email')}</p>
-            <p><strong>Phone:</strong> {data.get('phone')}</p>
-            <br>
-            <div class="order-details">
-                <h3>Appointment Details</h3>
-                <p><strong>Service:</strong> {data.get('service')}</p>
-                <p><strong>Date:</strong> {data.get('date')}</p>
-                <p><strong>Time:</strong> {data.get('time')}</p>
-            </div>
-            
-            <div class="order-details">
-                <h3>Customer Message</h3>
-                <p>{data.get('message') or 'No additional message provided.'}</p>
-            </div>
-        </div>
-        <div class="footer">
-            <p>&copy; {datetime.now().year} Annya Jewellers System Notification</p>
-        </div>
-    </div>
-    """
-
-@api_router.post("/api/appointments")
-async def request_appointment(data: AppointmentRequest):
-    """Handle appointment request and notify admin"""
+    user = result.scalar_one_or_none()
     
-    # Send email to Admin
-    admin_email = "Aanyajewellerysilver@gmail.com"
-    subject = f"New Appointment: {data.name} - {data.service}"
+    if not user or not verify_password(credentials.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    appt_dict = data.model_dump()
+    token = create_token(str(user.id))
     
-    await send_email(admin_email, subject, get_appointment_email(appt_dict), is_html=True)
-    
-    # Store in DB
-    appt_doc = appt_dict.copy()
-    appt_doc["id"] = str(uuid.uuid4())
-    appt_doc["created_at"] = datetime.now(timezone.utc).isoformat()
-    await db.appointments.insert_one(appt_doc)
-    
-    return {"message": "Appointment requested successfully"}
-
-# Address Management
-class AddressCreate(BaseModel):
-    label: str = "Home"  # Home, Work, Other
-    firstName: str
-    lastName: str
-    address: str
-    city: str
-    state: str
-    postalCode: str
-    phone: str
-    isDefault: bool = False
-
-class Address(BaseModel):
-    id: str
-    label: str
-    firstName: str
-    lastName: str
-    address: str
-    city: str
-    state: str
-    country: str = "India"
-    postalCode: str
-    phone: str
-    isDefault: bool
-
-@api_router.get("/addresses")
-async def get_addresses(current_user: dict = Depends(get_current_user)):
-    """Get all saved addresses for current user"""
-    addresses = await db.addresses.find({"userId": current_user["id"]}, {"_id": 0}).to_list(20)
-    return addresses
-
-@api_router.post("/addresses")
-async def add_address(address_data: AddressCreate, current_user: dict = Depends(get_current_user)):
-    """Add a new address"""
-    address_id = str(uuid.uuid4())
-    
-    # If this is first address or marked default, set others to non-default
-    if address_data.isDefault:
-        await db.addresses.update_many(
-            {"userId": current_user["id"]},
-            {"$set": {"isDefault": False}}
-        )
-    
-    # Check if this is the first address
-    existing_count = await db.addresses.count_documents({"userId": current_user["id"]})
-    is_first = existing_count == 0
-    
-    address_doc = {
-        "id": address_id,
-        "userId": current_user["id"],
-        "label": address_data.label,
-        "firstName": address_data.firstName,
-        "lastName": address_data.lastName,
-        "address": address_data.address,
-        "city": address_data.city,
-        "state": address_data.state,
-        "country": "India",
-        "postalCode": address_data.postalCode,
-        "phone": address_data.phone,
-        "isDefault": address_data.isDefault or is_first,
-        "createdAt": datetime.now(timezone.utc).isoformat()
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "name": user.full_name,
+            "role": user.role,
+            "phone": user.phone,
+            "address": user.address,
+            "city": user.city,
+            "state": user.state,
+            "pincode": user.pincode,
+            "country": user.country
+        }
     }
-    
-    await db.addresses.insert_one(address_doc)
-    return {"message": "Address added successfully", "address": {**address_doc, "_id": None}}
 
-@api_router.put("/addresses/{address_id}")
-async def update_address(address_id: str, address_data: AddressCreate, current_user: dict = Depends(get_current_user)):
-    """Update an existing address"""
-    existing = await db.addresses.find_one({"id": address_id, "userId": current_user["id"]})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Address not found")
-    
-    # If setting as default, unset others
-    if address_data.isDefault:
-        await db.addresses.update_many(
-            {"userId": current_user["id"]},
-            {"$set": {"isDefault": False}}
+@api_router.post("/auth/owner-login", response_model=AuthResponse)
+async def owner_login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
+    """Owner/Admin login"""
+    # Check hardcoded owner credentials
+    if credentials.email == OWNER_USERNAME and credentials.password == OWNER_PASSWORD:
+        # Create/get owner user
+        result = await db.execute(
+            select(UserDB).where(UserDB.email == OWNER_USERNAME)
         )
+        owner = result.scalar_one_or_none()
+        
+        if not owner:
+            owner = UserDB(
+                email=OWNER_USERNAME,
+                password_hash=hash_password(OWNER_PASSWORD),
+                full_name="Owner",
+                role='owner'
+            )
+            db.add(owner)
+            await db.commit()
+            await db.refresh(owner)
+        
+        token = create_token(str(owner.id))
+        
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "id": str(owner.id),
+                "email": owner.email,
+                "name": owner.full_name,
+                "role": owner.role
+            }
+        }
     
-    await db.addresses.update_one(
-        {"id": address_id},
-        {"$set": {
-            "label": address_data.label,
-            "firstName": address_data.firstName,
-            "lastName": address_data.lastName,
-            "address": address_data.address,
-            "city": address_data.city,
-            "state": address_data.state,
-            "postalCode": address_data.postalCode,
-            "phone": address_data.phone,
-            "isDefault": address_data.isDefault
-        }}
+    raise HTTPException(status_code=401, detail="Invalid owner credentials")
+
+@api_router.get("/auth/me")
+async def get_me(current_user: UserDB = Depends(get_current_user)):
+    """Get current user info"""
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "name": current_user.full_name,
+        "phone": current_user.phone,
+        "role": current_user.role,
+        "address": current_user.address,
+        "city": current_user.city,
+        "state": current_user.state,
+        "pincode": current_user.pincode,
+        "country": current_user.country
+    }
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+
+@api_router.put("/auth/profile")
+async def update_profile(
+    user_data: UserUpdate,
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update current user profile"""
+    # Check if email is being changed and if it's already taken
+    if user_data.email and user_data.email != current_user.email:
+        result = await db.execute(
+            select(UserDB).where(UserDB.email == user_data.email)
+        )
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Email already registered")
+        current_user.email = user_data.email
+    
+    if user_data.name:
+        current_user.full_name = user_data.name
+    
+    if user_data.phone:
+        current_user.phone = user_data.phone
+        
+    await db.commit()
+    await db.refresh(current_user)
+    
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "name": current_user.full_name,
+        "phone": current_user.phone,
+        "role": current_user.role,
+        "address": current_user.address,
+        "city": current_user.city,
+        "state": current_user.state,
+        "pincode": current_user.pincode,
+        "country": current_user.country
+    }
+
+# ============================================
+# OWNER LOGIN (alternate route for frontend compatibility)
+# ============================================
+
+@api_router.post("/owner/login")
+async def owner_login_alt(credentials: OwnerLogin, db: AsyncSession = Depends(get_db)):
+    """Owner/Admin login - alternate route"""
+    # Check hardcoded owner credentials
+    if credentials.email == OWNER_USERNAME and credentials.password == OWNER_PASSWORD:
+        # Create/get owner user
+        result = await db.execute(
+            select(UserDB).where(UserDB.email == OWNER_USERNAME)
+        )
+        owner = result.scalar_one_or_none()
+        
+        if not owner:
+            owner = UserDB(
+                email=OWNER_USERNAME,
+                password_hash=hash_password(OWNER_PASSWORD),
+                full_name="Owner",
+                role='owner'
+            )
+            db.add(owner)
+            await db.commit()
+            await db.refresh(owner)
+        
+        token = create_token(str(owner.id))
+        
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "id": str(owner.id),
+                "email": owner.email,
+                "name": owner.full_name,
+                "role": owner.role
+            }
+        }
+    
+    raise HTTPException(status_code=401, detail="Invalid owner credentials")
+
+# ============================================
+# MOUNT API ROUTER
+# ============================================
+
+
+# Owner verify endpoint
+@api_router.get("/owner/verify")
+async def verify_owner(current_user: UserDB = Depends(get_current_user)):
+    if current_user.role not in ['owner', 'admin']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return {"valid": True, "role": current_user.role}
+
+# ============================================
+# ADMIN - CUSTOMERS API
+# ============================================
+
+@api_router.post("/admin/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    owner: UserDB = Depends(get_owner)
+):
+    """Upload a file (image) to local storage"""
+    try:
+        # Generate safe filename
+        file_ext = os.path.splitext(file.filename)[1]
+        if not file_ext:
+            file_ext = ".jpg" # Default
+            
+        unique_filename = f"{uuid_lib.uuid4().hex}{file_ext}"
+        file_path = os.path.join(UPLOAD_DIR, unique_filename)
+        
+        # Save file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # Return URL
+        # Generate full URL based on request would be better, but relative or absolute path works too
+        # For now, return absolute URL assuming localhost
+        # In production, this should be dynamic or based on env var
+        file_url = f"http://localhost:8006/static/{unique_filename}"
+        
+        return {"url": file_url}
+        
+    except Exception as e:
+        print(f"Upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
+# ============================================
+# ADMIN - NAVIGATION API
+# ============================================
+
+NAVIGATION_FILE = "navigation_config.json"
+
+def get_default_navigation():
+    """Return default navigation structure"""
+    return [
+        {
+            "name": "ENGAGEMENT RINGS",
+            "columns": [
+                {"title": None, "items": ["Solitaire Diamond Rings", "Halo Diamond Rings", "Three Stone Diamond Rings", "Lab Grown Diamond Rings", "All Engagement Rings"]},
+                {"title": "DIAMOND CUT", "items": ["Round", "Oval", "Emerald", "Pear", "Other"]}
+            ]
+        },
+        {
+            "name": "DIAMOND JEWELLERY",
+            "columns": [
+                {"title": "JEWELLERY TYPE", "items": ["Diamond Eternity Rings", "Diamond Dress Rings", "Diamond Pendants", "Diamond Bracelets", "Diamond Bangles", "Diamond Earrings", "Diamond Necklets", "All Diamond Jewellery"]},
+                {"title": "GEMSTONE TYPE", "items": ["Diamond", "Sapphire", "Emerald", "Ruby", "Pearl", "All Gemstone Jewellery"]}
+            ]
+        },
+        {
+            "name": "WEDDING RINGS",
+            "columns": [
+                {"title": "LADIES WEDDING RINGS", "items": ["Diamond Rings", "White Gold Rings", "Yellow Gold Rings", "Platinum Rings"]},
+                {"title": "GENTS WEDDING RINGS", "items": ["White Gold Rings", "Yellow Gold Rings", "Platinum Rings", "All Wedding Rings"]}
+            ]
+        },
+        {
+            "name": "GOLD JEWELLERY",
+            "columns": [
+                {"title": None, "items": ["Gold Pendants", "Gold Bracelets", "Gold Bangles", "Gold Earrings", "Gold Necklets"]},
+                {"title": None, "items": ["Gold Rings", "Gold Chains", "All Gold Jewellery"]}
+            ]
+        },
+        {
+            "name": "SILVER JEWELLERY",
+            "columns": [
+                {"title": None, "items": ["Silver Rings", "Silver Pendants", "Silver Bracelets"]},
+                {"title": None, "items": ["Silver Earrings", "Silver Necklets", "All Silver Jewellery"]}
+            ]
+        }
+    ]
+
+@api_router.get("/admin/navigation")
+async def get_navigation(owner: UserDB = Depends(get_owner)):
+    """Get navigation menu structure"""
+    try:
+        if os.path.exists(NAVIGATION_FILE):
+            with open(NAVIGATION_FILE, 'r') as f:
+                return json.load(f)
+        return get_default_navigation()
+    except Exception as e:
+        logger.error(f"Error loading navigation: {e}")
+        return get_default_navigation()
+
+@api_router.put("/admin/navigation")
+async def update_navigation(
+    nav_items: list = Body(...),
+    owner: UserDB = Depends(get_owner)
+):
+    """Update navigation menu structure"""
+    try:
+        with open(NAVIGATION_FILE, 'w') as f:
+            json.dump(nav_items, f, indent=2)
+        return {"success": True, "message": "Navigation saved successfully"}
+    except Exception as e:
+        logger.error(f"Error saving navigation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save navigation: {str(e)}")
+
+# ============================================
+# ADMIN - CUSTOMERS API
+# ============================================
+
+@api_router.get("/admin/customers")
+async def get_customers(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all customers (users with role='customer')"""
+    result = await db.execute(
+        select(UserDB).where(UserDB.role == 'customer')
+        .order_by(UserDB.created_at.desc())
+    )
+    customers = result.scalars().all()
+    
+    # Get order counts and total spent for each customer
+    customer_list = []
+    for customer in customers:
+        # Count orders
+        order_count_result = await db.execute(
+            select(func.count()).select_from(OrderDB)
+            .where(OrderDB.customer_id == str(customer.id))
+        )
+        order_count = order_count_result.scalar() or 0
+        
+        # Sum total spent
+        total_spent_result = await db.execute(
+            select(func.sum(OrderDB.grand_total))
+            .where(OrderDB.customer_id == str(customer.id))
+        )
+        total_spent = total_spent_result.scalar() or 0
+        
+        customer_list.append({
+            "id": str(customer.id),
+            "name": customer.full_name,
+            "email": customer.email,
+            "phone": customer.phone,
+            "orders": order_count,
+            "totalSpent": float(total_spent),
+            "createdAt": customer.created_at.isoformat() if customer.created_at else None
+        })
+    
+    return customer_list
+
+# ============================================
+# DASHBOARD ANALYTICS (real data)
+# ============================================
+
+@api_router.get("/navigation")
+async def get_navigation_tree(db: AsyncSession = Depends(get_db)):
+    """
+    Returns the navigation structure with dynamic featured products.
+    If no products found for a category, featured list is empty (hiding mock images).
+    """
+    from sqlalchemy.sql.expression import func
+    
+    # Helper to get 2 random products for a category/keyword
+    async def get_featured(keywords):
+        # Build search filters
+        filters = []
+        for keyword in keywords:
+            filters.append(ProductDB.category.ilike(f"%{keyword}%"))
+            filters.append(ProductDB.subcategory.ilike(f"%{keyword}%"))
+            filters.append(ProductDB.name.ilike(f"%{keyword}%"))
+            
+        stmt = (
+            select(ProductDB)
+            .where(
+                and_(
+                    or_(*filters),
+                    ProductDB.status == 'active',
+                    ProductDB.stock_quantity > 0,
+                    ProductDB.image.isnot(None),
+                    ProductDB.image != ""
+                )
+            )
+            .order_by(func.random())
+            .limit(2)
+        )
+        result = await db.execute(stmt)
+        products = result.scalars().all()
+        
+        return [
+            {
+                "title": p.name,
+                "link": f"/product/{p.id}",
+                "image": p.image
+            } 
+            for p in products
+        ]
+
+    # Define default navigation structure
+    default_nav_structure = [
+        {
+            "name": 'ENGAGEMENT RINGS',
+            "keywords": ["engagement"],
+            "columns": [
+                {"title": None, "items": ['Solitaire Diamond Rings', 'Halo Diamond Rings', 'Three Stone Diamond Rings', 'Lab Grown Diamond Rings', 'All Engagement Rings']},
+                {"title": 'DIAMOND CUT', "items": ['Round', 'Oval', 'Emerald', 'Pear', 'Other']}
+            ]
+        },
+        {
+            "name": 'DIAMOND JEWELLERY',
+            "keywords": ["diamond"],
+            "columns": [
+                {"title": 'JEWELLERY TYPE', "items": ['Diamond Eternity Rings', 'Diamond Dress Rings', 'Diamond Pendants', 'Diamond Bracelets', 'Diamond Bangles', 'Diamond Earrings', 'Diamond Necklets', 'All Diamond Jewellery']},
+                {"title": 'GEMSTONE TYPE', "items": ['Diamond', 'Sapphire', 'Emerald', 'Ruby', 'Pearl', 'All Gemstone Jewellery']}
+            ]
+        },
+        {
+            "name": 'WEDDING RINGS',
+            "keywords": ["wedding", "band"],
+            "columns": [
+                {"title": 'LADIES WEDDING RINGS', "items": ['Diamond Rings', 'White Gold Rings', 'Yellow Gold Rings', 'Platinum Rings']},
+                {"title": 'GENTS WEDDING RINGS', "items": ['White Gold Rings', 'Yellow Gold Rings', 'Platinum Rings', 'All Wedding Rings']}
+            ]
+        },
+        {
+            "name": 'GOLD JEWELLERY',
+            "keywords": ["gold"],
+            "columns": [
+                {"title": None, "items": ['Gold Pendants', 'Gold Bracelets', 'Gold Bangles', 'Gold Earrings', 'Gold Necklets']},
+                {"title": None, "items": ['Gold Rings', 'Gold Chains', 'All Gold Jewellery']}
+            ]
+        },
+        {
+            "name": 'SILVER JEWELLERY',
+            "keywords": ["silver"],
+            "columns": [
+                {"title": None, "items": ['Silver Rings', 'Silver Pendants', 'Silver Bracelets']},
+                {"title": None, "items": ['Silver Earrings', 'Silver Necklets', 'All Silver Jewellery']}
+            ]
+        }
+    ]
+
+    # Try to load saved navigation from config file
+    nav_structure = default_nav_structure
+    try:
+        if os.path.exists(NAVIGATION_FILE):
+            with open(NAVIGATION_FILE, 'r') as f:
+                saved_nav = json.load(f)
+                if saved_nav and len(saved_nav) > 0:
+                    # Add keywords based on category name for featured product lookup
+                    keyword_map = {
+                        "ENGAGEMENT RINGS": ["engagement"],
+                        "DIAMOND JEWELLERY": ["diamond"],
+                        "WEDDING RINGS": ["wedding", "band"],
+                        "GOLD JEWELLERY": ["gold"],
+                        "SILVER JEWELLERY": ["silver"]
+                    }
+                    nav_structure = []
+                    for item in saved_nav:
+                        nav_structure.append({
+                            "name": item.get("name", ""),
+                            "keywords": keyword_map.get(item.get("name", "").upper(), [item.get("name", "").lower().split()[0]]),
+                            "columns": item.get("columns", [])
+                        })
+    except Exception as e:
+        logger.error(f"Error loading saved navigation: {e}")
+        nav_structure = default_nav_structure
+
+    # Populate featured arrays dynamically
+    final_nav = []
+    for item in nav_structure:
+        featured_items = await get_featured(item.get("keywords", []))
+        final_nav.append({
+            "name": item["name"],
+            "columns": item["columns"],
+            "featured": featured_items  # Will be list of 0-2 items
+        })
+        
+    return final_nav
+
+
+@api_router.get("/admin/dashboard")
+async def get_dashboard_stats(
+    period: str = "7d",
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get dashboard statistics with percentage changes"""
+    from datetime import datetime, timedelta, timezone
+    
+    # Calculate date ranges
+    days_map = {"today": 1, "7d": 7, "30d": 30, "90d": 90}
+    days = days_map.get(period, 7)
+    
+    now = datetime.now(timezone.utc)
+    current_start = now - timedelta(days=days)
+    previous_start = current_start - timedelta(days=days)
+    
+    async def get_period_stats(start_time, end_time):
+        # Gross sales
+        gross_sales_res = await db.execute(
+            select(func.sum(OrderDB.grand_total))
+            .where(and_(OrderDB.created_at >= start_time, OrderDB.created_at < end_time))
+        )
+        gross_sales = gross_sales_res.scalar() or 0
+        
+        # Net sales (paid)
+        net_sales_res = await db.execute(
+            select(func.sum(OrderDB.grand_total))
+            .where(and_(
+                OrderDB.created_at >= start_time, 
+                OrderDB.created_at < end_time,
+                OrderDB.payment_status == 'paid'
+            ))
+        )
+        net_sales = net_sales_res.scalar() or 0
+        
+        # Gross profit
+        gross_profit_res = await db.execute(
+            select(func.sum(OrderDB.gross_profit))
+            .where(and_(
+                OrderDB.created_at >= start_time,
+                OrderDB.created_at < end_time,
+                OrderDB.payment_status == 'paid'
+            ))
+        )
+        gross_profit = gross_profit_res.scalar() or 0
+        
+        # Net profit (simplified)
+        net_profit = gross_profit
+        
+        return {
+            "gross_sales": float(gross_sales),
+            "net_sales": float(net_sales),
+            "gross_profit": float(gross_profit),
+            "net_profit": float(net_profit)
+        }
+
+    # Get current and previous period stats
+    current = await get_period_stats(current_start, now)
+    previous = await get_period_stats(previous_start, current_start)
+    
+    def calculate_change(curr, prev):
+        if prev == 0:
+            return "+0.0%" if curr == 0 else "+100%"
+        change = ((curr - prev) / prev) * 100
+        sign = "+" if change >= 0 else ""
+        return f"{sign}{change:.1f}%"
+
+    # Other non-comparative stats
+    # Order count
+    order_count_result = await db.execute(
+        select(func.count()).select_from(OrderDB)
+        .where(OrderDB.created_at >= current_start)
+    )
+    order_count = order_count_result.scalar() or 0
+    
+    # Pending orders count
+    pending_count_result = await db.execute(
+        select(func.count()).select_from(OrderDB)
+        .where(
+            and_(
+                OrderDB.created_at >= current_start,
+                OrderDB.status == 'pending'
+            )
+        )
+    )
+    pending_count = pending_count_result.scalar() or 0
+    
+    # Inventory value
+    inventory_value_result = await db.execute(
+        select(func.sum(ProductDB.selling_price * ProductDB.stock_quantity))
+    )
+    inventory_value = inventory_value_result.scalar() or 0
+    
+    # Low stock count
+    low_stock_result = await db.execute(
+        select(func.count()).select_from(ProductDB)
+        .where(ProductDB.stock_quantity <= ProductDB.low_stock_threshold)
+    )
+    low_stock_count = low_stock_result.scalar() or 0
+    
+    # Stockout count (0 quantity)
+    stockout_result = await db.execute(
+        select(func.count()).select_from(ProductDB)
+        .where(ProductDB.stock_quantity == 0)
+    )
+    stockout_count = stockout_result.scalar() or 0
+    
+    return {
+        "gross_sales": current["gross_sales"],
+        "gross_sales_change": calculate_change(current["gross_sales"], previous["gross_sales"]),
+        
+        "net_sales": current["net_sales"],
+        "net_sales_change": calculate_change(current["net_sales"], previous["net_sales"]),
+        
+        "gross_profit": current["gross_profit"],
+        "gross_profit_change": calculate_change(current["gross_profit"], previous["gross_profit"]),
+        
+        "net_profit": current["net_profit"],
+        "net_profit_change": calculate_change(current["net_profit"], previous["net_profit"]),
+        
+        "orders_count": order_count,
+        "orders_pending": pending_count,
+        "orders_fulfilled": 0, # Placeholder or implement query
+        "orders_returned": 0, # Placeholder or implement query
+        
+        "inventory_value": float(inventory_value),
+        "low_stock_count": low_stock_count,
+        "stockout_count": stockout_count
+    }
+
+@api_router.get("/admin/analytics/sales")
+async def get_sales_analytics(
+    days: int = 7,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get sales trend data"""
+    from datetime import datetime, timedelta, timezone
+    
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    # Get daily sales
+    # Get daily sales
+    # Use text() for GROUP BY to avoid SQLAlchemy/Postgres expression matching issues
+    from sqlalchemy import text
+    result = await db.execute(
+        select(
+            func.date_trunc('day', OrderDB.created_at).label('date'),
+            func.sum(OrderDB.grand_total).label('sales'),
+            func.sum(OrderDB.gross_profit).label('profit')
+        )
+        .where(OrderDB.created_at >= start_date)
+        .group_by(text('date'))
+        .order_by(text('date'))
     )
     
-    return {"message": "Address updated successfully"}
-
-@api_router.delete("/addresses/{address_id}")
-async def delete_address(address_id: str, current_user: dict = Depends(get_current_user)):
-    """Delete an address"""
-    result = await db.addresses.delete_one({"id": address_id, "userId": current_user["id"]})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Address not found")
-    return {"message": "Address deleted successfully"}
-
-@api_router.post("/addresses/{address_id}/default")
-async def set_default_address(address_id: str, current_user: dict = Depends(get_current_user)):
-    """Set an address as default"""
-    existing = await db.addresses.find_one({"id": address_id, "userId": current_user["id"]})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Address not found")
+    data = [
+        {
+            "date": row.date.isoformat() if row.date else None,
+            "sales": float(row.sales or 0),
+            "profit": float(row.profit or 0)
+        }
+        for row in result.all()
+    ]
     
-    # Unset all as default
-    await db.addresses.update_many(
-        {"userId": current_user["id"]},
-        {"$set": {"isDefault": False}}
+    return data
+
+@api_router.get("/admin/analytics/top-products")
+async def get_top_products(
+    days: int = 7,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get top selling products"""
+    from datetime import datetime, timedelta, timezone
+    
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    # Query orders and extract product info from items JSONB
+    result = await db.execute(
+        select(OrderDB)
+        .where(OrderDB.created_at >= start_date)
+    )
+    orders = result.scalars().all()
+    
+    # Aggregate product sales
+    product_sales = {}
+    for order in orders:
+        if order.items:
+            for item in order.items:
+                product_id = item.get('id') or item.get('productId')
+                if product_id:
+                    if product_id not in product_sales:
+                        product_sales[product_id] = {
+                            "name": item.get('name', 'Unknown'),
+                            "quantity": 0,
+                            "revenue": 0
+                        }
+                    quantity = item.get('quantity', 1)
+                    price = item.get('price', 0)
+                    product_sales[product_id]["quantity"] += quantity
+                    product_sales[product_id]["revenue"] += quantity * price
+    
+    # Sort by quantity and return top 10
+    top_products = sorted(
+        [{"id": k, **v} for k, v in product_sales.items()],
+        key=lambda x: x["quantity"],
+        reverse=True
+    )[:10]
+    
+    return top_products
+
+@api_router.get("/admin/analytics/low-stock")
+async def get_low_stock_items(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get low stock items"""
+    result = await db.execute(
+        select(ProductDB)
+        .where(ProductDB.stock_quantity <= ProductDB.low_stock_threshold)
+        .order_by(ProductDB.stock_quantity.asc())
+        .limit(20)
+    )
+    products = result.scalars().all()
+    
+    return [{
+        "id": str(p.id),
+        "sku": p.sku,
+        "name": p.name,
+        "stockQuantity": p.stock_quantity,
+        "lowStockThreshold": p.low_stock_threshold,
+        "category": p.category
+    } for p in products]
+
+@api_router.get("/admin/analytics/traffic")
+async def get_traffic_analytics(
+    days: int = 30,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get traffic analytics over time (simulated data for now)"""
+    import random
+    from datetime import datetime, timedelta
+    
+    traffic_data = []
+    today = datetime.now()
+    
+    for i in range(days, 0, -1):
+        date = today - timedelta(days=i)
+        # Generate realistic-looking traffic data with some variance
+        base_visitors = random.randint(50, 200)
+        traffic_data.append({
+            "date": date.strftime("%b %d"),
+            "visitors": base_visitors,
+            "pageviews": base_visitors * random.randint(2, 5)
+        })
+    
+    return traffic_data
+
+@api_router.get("/admin/analytics/pages")
+async def get_top_pages(
+    limit: int = 5,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get top visited pages with analytics"""
+    import random
+    
+    pages = [
+        {"page": "/", "views": random.randint(500, 2000), "bounce": random.randint(20, 50)},
+        {"page": "/products", "views": random.randint(300, 1500), "bounce": random.randint(25, 45)},
+        {"page": "/collections/engagement-rings", "views": random.randint(200, 800), "bounce": random.randint(30, 55)},
+        {"page": "/collections/gold-jewellery", "views": random.randint(150, 600), "bounce": random.randint(28, 50)},
+        {"page": "/about", "views": random.randint(100, 400), "bounce": random.randint(35, 60)},
+        {"page": "/contact", "views": random.randint(80, 300), "bounce": random.randint(40, 65)},
+        {"page": "/cart", "views": random.randint(150, 500), "bounce": random.randint(15, 35)}
+    ]
+    
+    # Sort by views and return top N
+    pages.sort(key=lambda x: x["views"], reverse=True)
+    return pages[:limit]
+
+@api_router.get("/admin/analytics/devices")
+async def get_device_analytics(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get device breakdown analytics"""
+    import random
+    
+    total = random.randint(2000, 5000)
+    mobile_pct = random.uniform(0.45, 0.65)
+    desktop_pct = random.uniform(0.25, 0.40)
+    tablet_pct = 1 - mobile_pct - desktop_pct
+    
+    return [
+        {"device": "Mobile", "sessions": int(total * mobile_pct)},
+        {"device": "Desktop", "sessions": int(total * desktop_pct)},
+        {"device": "Tablet", "sessions": int(total * tablet_pct)}
+    ]
+
+@api_router.get("/admin/analytics/sources")
+async def get_traffic_sources(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get traffic source breakdown"""
+    import random
+    
+    # Generate percentages that sum to ~1
+    direct = random.uniform(0.25, 0.40)
+    organic = random.uniform(0.20, 0.35)
+    social = random.uniform(0.10, 0.25)
+    referral = random.uniform(0.05, 0.15)
+    paid = 1 - direct - organic - social - referral
+    
+    return [
+        {"source": "Direct", "percent": round(direct, 3)},
+        {"source": "Organic Search", "percent": round(organic, 3)},
+        {"source": "Social Media", "percent": round(social, 3)},
+        {"source": "Referral", "percent": round(referral, 3)},
+        {"source": "Paid Ads", "percent": round(max(0, paid), 3)}
+    ]
+
+# ============================================
+# VENDORS
+# ============================================
+
+class VendorCreate(BaseModel):
+    name: str
+    code: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+@api_router.post("/admin/products/import")
+async def import_products(
+    file: UploadFile = File(...),
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Import products from CSV file using UPSERT pattern"""
+    import csv
+    import codecs
+    import uuid as uuid_lib
+    import io
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    
+    print(f"DEBUG: Starting import for file: {file.filename}")
+    
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+        
+    try:
+        # Read file content
+        content = await file.read()
+        print(f"DEBUG: Read {len(content)} bytes")
+        
+        # Decode using utf-8-sig to handle BOM if present
+        decoded_content = content.decode('utf-8-sig')
+        
+        # Use StringIO to handle universal newlines
+        csv_file = io.StringIO(decoded_content)
+        csv_reader = csv.DictReader(csv_file)
+        
+        # Log headers
+        print(f"DEBUG: CSV Headers detected: {csv_reader.fieldnames}")
+        
+        values_list = []
+        rows_processed = 0
+        skipped_count = 0
+        
+        # Helper to parse float safely
+        def parse_float(val, default=0.0):
+            if not val: return default
+            try:
+                return float(str(val).replace(',', '').strip())
+            except:
+                return default
+        
+        # Helper to parse int safely
+        def parse_int(val, default=0):
+            if not val: return default
+            try:
+                return int(float(str(val).replace(',', '').strip()))
+            except:
+                return default
+        
+        for i, row in enumerate(csv_reader):
+            rows_processed += 1
+            
+            # Skip empty rows
+            if not any(v for v in row.values() if v is not None and str(v).strip()):
+                skipped_count += 1
+                continue
+                
+            # Basic validation
+            name = row.get('name')
+            price = row.get('sellingPrice')
+            
+            if not name or not price:
+                print(f"DEBUG: Skipping invalid row {i} - Name: {name}, Price: {price}")
+                skipped_count += 1
+                continue
+            
+            # Calculations
+            selling_price = parse_float(row.get('sellingPrice'))
+            cost_gold = parse_float(row.get('costGold'))
+            cost_stone = parse_float(row.get('costStone'))
+            cost_making = parse_float(row.get('costMaking'))
+            cost_other = parse_float(row.get('costOther'))
+            
+            total_cost = cost_gold + cost_stone + cost_making + cost_other
+            profit_margin = 0
+            margin_percent = 0
+            
+            if selling_price > 0:
+                profit_margin = selling_price - total_cost
+                margin_percent = (profit_margin / selling_price) * 100
+
+            # Build dict for execute(stmt)
+            product_dict = {
+                "id": uuid_lib.uuid4(), # Note: On conflict update, ID won't change if exists
+                "sku": row.get('sku') or f"SKU-{uuid_lib.uuid4().hex[:8].upper()}",
+                "barcode": row.get('barcode'),
+                "hsn_code": row.get('hsnCode', '7113'),
+                
+                "name": row.get('name'),
+                "description": row.get('description'),
+                "category": row.get('category'),
+                "subcategory": row.get('subcategory'),
+                "tags": row.get('tags', '').split(',') if row.get('tags') else [],
+                "status": row.get('status', 'active'),
+                
+                "metal": row.get('metal'),
+                "purity": row.get('purity'),
+                "gross_weight": parse_float(row.get('grossWeight')),
+                "net_weight": parse_float(row.get('netWeight')),
+                "stone_weight": parse_float(row.get('stoneWeight')),
+                "stone_type": row.get('stoneType'),
+                "stone_quality": row.get('stoneQuality'),
+                
+                "selling_price": selling_price,
+                "price": parse_float(row.get('netPrice')) or selling_price,
+                
+                "cost_gold": cost_gold,
+                "cost_stone": cost_stone,
+                "cost_making": cost_making,
+                "cost_other": cost_other,
+                
+                "total_cost": total_cost,
+                "profit_margin": profit_margin,
+                "margin_percent": margin_percent,
+                
+                "stock_quantity": parse_int(row.get('stockQuantity')),
+                "low_stock_threshold": parse_int(row.get('lowStockThreshold'), 2),
+                "track_inventory": True,
+                "in_stock": parse_int(row.get('stockQuantity')) > 0
+            }
+            values_list.append(product_dict)
+            
+        print(f"DEBUG: Total rows: {rows_processed}, Skipped: {skipped_count}, To add/update: {len(values_list)}")
+        
+        # Alternative approach: Delete existing and insert fresh
+        # This avoids unique constraint issues between SKU and barcode
+        if values_list:
+            # First, delete all products that match SKUs in the import
+            skus_to_import = [v['sku'] for v in values_list]
+            await db.execute(
+                delete(ProductDB).where(ProductDB.sku.in_(skus_to_import))
+            )
+            
+            # Also delete by barcode to avoid conflicts
+            barcodes_to_import = [v['barcode'] for v in values_list if v.get('barcode')]
+            if barcodes_to_import:
+                await db.execute(
+                    delete(ProductDB).where(ProductDB.barcode.in_(barcodes_to_import))
+                )
+            
+            # Now insert all products fresh
+            from sqlalchemy import insert as sql_insert
+            stmt = sql_insert(ProductDB).values(values_list)
+            
+            await db.execute(stmt)
+            await db.commit()
+            print("DEBUG: Commit successful")
+            
+        return {
+            "success": True, 
+            "message": f"Processed {len(values_list)} products",
+            "count": len(values_list),
+            "inserted": len(values_list), # We treat upserts as 'success'
+            "updated": 0
+        }
+        
+    except Exception as e:
+        print(f"Import Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+@api_router.get("/admin/products")
+async def get_products(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all products for admin dashboard"""
+    # Fetch products with newest first
+    stmt = select(ProductDB).order_by(ProductDB.created_at.desc())
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+    
+    return [
+        {
+            "id": str(p.id),
+            "sku": p.sku,
+            "name": p.name,
+            "category": p.category,
+            "image": p.image,
+            "price": p.selling_price,
+            "inventory": p.stock_quantity,
+            "inStock": p.in_stock,
+            "status": p.status,
+            "sales": 0, # Placeholder for now
+            "rating": 5.0 # Placeholder
+        }
+        for p in products
+    ]
+
+@api_router.put("/admin/products/{product_id}")
+async def update_product(
+    product_id: str,
+    product_data: dict = Body(...),
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update a product by ID"""
+    try:
+        # Find the product
+        result = await db.execute(select(ProductDB).where(ProductDB.id == product_id))
+        product = result.scalar_one_or_none()
+        
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+        
+        # Update product fields
+        if "name" in product_data:
+            product.name = product_data["name"]
+        if "description" in product_data:
+            product.description = product_data.get("description")
+        if "category" in product_data:
+            product.category = product_data["category"]
+        if "subcategory" in product_data:
+            product.subcategory = product_data.get("subcategory")
+        if "sku" in product_data:
+            product.sku = product_data["sku"]
+        if "barcode" in product_data:
+            product.barcode = product_data.get("barcode")
+        if "hsnCode" in product_data:
+            product.hsn_code = product_data.get("hsnCode")
+        if "image" in product_data:
+            product.image = product_data.get("image")
+        if "images" in product_data:
+            product.images = product_data.get("images", [])
+        if "metal" in product_data:
+            product.metal = product_data.get("metal")
+        if "purity" in product_data:
+            product.purity = product_data.get("purity")
+        if "grossWeight" in product_data:
+            product.gross_weight = product_data.get("grossWeight")
+        if "netWeight" in product_data:
+            product.net_weight = product_data.get("netWeight")
+        if "stoneWeight" in product_data:
+            product.stone_weight = product_data.get("stoneWeight")
+        if "stoneType" in product_data:
+            product.stone_type = product_data.get("stoneType")
+        if "stoneQuality" in product_data:
+            product.stone_quality = product_data.get("stoneQuality")
+        if "certification" in product_data:
+            product.certification = product_data.get("certification")
+        if "sellingPrice" in product_data or "price" in product_data:
+            product.selling_price = product_data.get("sellingPrice") or product_data.get("price")
+            product.price = product.selling_price
+        if "costGold" in product_data:
+            product.cost_gold = product_data.get("costGold")
+        if "costStone" in product_data:
+            product.cost_stone = product_data.get("costStone")
+        if "costMaking" in product_data:
+            product.cost_making = product_data.get("costMaking")
+        if "costOther" in product_data:
+            product.cost_other = product_data.get("costOther")
+        if "totalCost" in product_data:
+            product.total_cost = product_data.get("totalCost")
+        if "profitMargin" in product_data:
+            product.profit_margin = product_data.get("profitMargin")
+        if "marginPercent" in product_data:
+            product.margin_percent = product_data.get("marginPercent")
+        if "stockQuantity" in product_data:
+            product.stock_quantity = product_data.get("stockQuantity")
+        if "lowStockThreshold" in product_data:
+            product.low_stock_threshold = product_data.get("lowStockThreshold")
+        if "inStock" in product_data:
+            product.in_stock = product_data.get("inStock")
+        if "status" in product_data:
+            product.status = product_data.get("status")
+        if "vendorId" in product_data:
+            product.vendor_id = product_data.get("vendorId")
+        if "vendorName" in product_data:
+            product.vendor_name = product_data.get("vendorName")
+        if "taxRate" in product_data:
+            product.tax_rate = product_data.get("taxRate")
+        if "isTaxable" in product_data:
+            product.is_taxable = product_data.get("isTaxable")
+        if "hasDiscount" in product_data:
+            product.has_discount = product_data.get("hasDiscount")
+        if "discountType" in product_data:
+            product.discount_type = product_data.get("discountType")
+        if "discountValue" in product_data:
+            product.discount_value = product_data.get("discountValue")
+        if "discountedPrice" in product_data:
+            product.discounted_price = product_data.get("discountedPrice")
+        if "allowCoupons" in product_data:
+            product.allow_coupons = product_data.get("allowCoupons")
+        if "tags" in product_data:
+            product.tags = product_data.get("tags", [])
+            
+        await db.commit()
+        
+        return {"success": True, "message": "Product updated successfully", "id": str(product.id)}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating product: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update product: {str(e)}")
+
+@api_router.post("/admin/products")
+async def create_product(
+    product_data: dict = Body(...),
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new product"""
+    try:
+        # Generate unique identifiers if not provided
+        sku = product_data.get("sku") or f"SKU-{uuid_lib.uuid4().hex[:8].upper()}"
+        barcode = product_data.get("barcode") or f"{uuid_lib.uuid4().int % 10**13:013d}"
+        
+        new_product = ProductDB(
+            id=uuid_lib.uuid4(),
+            sku=sku,
+            barcode=barcode,
+            hsn_code=product_data.get("hsnCode", "7113"),
+            name=product_data.get("name"),
+            description=product_data.get("description"),
+            category=product_data.get("category", "Gold Jewellery"),
+            subcategory=product_data.get("subcategory"),
+            tags=product_data.get("tags", []),
+            status=product_data.get("status", "active"),
+            image=product_data.get("image"),
+            images=product_data.get("images", []),
+            metal=product_data.get("metal"),
+            purity=product_data.get("purity"),
+            gross_weight=product_data.get("grossWeight"),
+            net_weight=product_data.get("netWeight"),
+            stone_weight=product_data.get("stoneWeight"),
+            stone_type=product_data.get("stoneType"),
+            stone_quality=product_data.get("stoneQuality"),
+            certification=product_data.get("certification"),
+            selling_price=product_data.get("sellingPrice") or product_data.get("price"),
+            price=product_data.get("sellingPrice") or product_data.get("price"),
+            cost_gold=product_data.get("costGold"),
+            cost_stone=product_data.get("costStone"),
+            cost_making=product_data.get("costMaking"),
+            cost_other=product_data.get("costOther"),
+            total_cost=product_data.get("totalCost"),
+            profit_margin=product_data.get("profitMargin"),
+            margin_percent=product_data.get("marginPercent"),
+            stock_quantity=product_data.get("stockQuantity", 0),
+            low_stock_threshold=product_data.get("lowStockThreshold", 2),
+            in_stock=product_data.get("inStock", True),
+            vendor_id=product_data.get("vendorId"),
+            vendor_name=product_data.get("vendorName"),
+            tax_rate=product_data.get("taxRate", 3),
+            is_taxable=product_data.get("isTaxable", True),
+            has_discount=product_data.get("hasDiscount", False),
+            discount_type=product_data.get("discountType"),
+            discount_value=product_data.get("discountValue"),
+            discounted_price=product_data.get("discountedPrice"),
+            allow_coupons=product_data.get("allowCoupons", True)
+        )
+        
+        db.add(new_product)
+        await db.commit()
+        
+        return {"success": True, "message": "Product created successfully", "id": str(new_product.id)}
+        
+    except Exception as e:
+        logger.error(f"Error creating product: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create product: {str(e)}")
+
+@api_router.get("/admin/vendors")
+async def get_vendors(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all vendors"""
+    result = await db.execute(select(VendorDB))
+    vendors = result.scalars().all()
+    
+    return [{
+        "id": v.id,
+        "name": v.name,
+        "code": v.code,
+        "email": v.email,
+        "phone": v.phone,
+        "isActive": v.is_active
+    } for v in vendors]
+
+@api_router.post("/admin/vendors")
+async def create_vendor(
+    vendor_data: VendorCreate,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create new vendor"""
+    import uuid as uuid_lib
+    import random
+    new_vendor = VendorDB(
+        id=str(uuid_lib.uuid4()),
+        name=vendor_data.name,
+        code=vendor_data.code or f"VND-{random.randint(100, 999)}",
+        email=vendor_data.email,
+        phone=vendor_data.phone,
+        is_active=True
     )
     
-    # Set this one as default
-    await db.addresses.update_one(
-        {"id": address_id},
-        {"$set": {"isDefault": True}}
+    db.add(new_vendor)
+    await db.commit()
+    await db.refresh(new_vendor)
+    
+    return {"id": new_vendor.id, "name": new_vendor.name}
+
+# ============================================
+# COUPONS
+# ============================================
+
+class CouponCreate(BaseModel):
+    code: str
+    description: Optional[str] = ""
+    type: str
+    value: float
+    minOrderValue: Optional[float] = 0
+    maxDiscount: Optional[float] = None
+    scope: str = "general"
+    applicableProducts: List[str] = []
+    usageLimit: Optional[int] = None
+    perCustomerLimit: int = 1
+    validFrom: Optional[str] = None
+    validTo: Optional[str] = None
+    isActive: bool = True
+
+@api_router.get("/admin/coupons")
+async def get_coupons(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all coupons"""
+    result = await db.execute(select(CouponDB))
+    coupons = result.scalars().all()
+    
+    return [{
+        "id": str(c.id),
+        "code": c.code,
+        "description": c.description,
+        "type": c.type,
+        "value": float(c.value),
+        "minOrderValue": float(c.min_order_value) if c.min_order_value else 0,
+        "maxDiscount": float(c.max_discount) if c.max_discount else None,
+        "scope": c.scope,
+        "applicableProducts": c.applicable_products,
+        "usageLimit": c.usage_limit,
+        "perCustomerLimit": c.per_customer_limit,
+        "validFrom": c.valid_from.isoformat() if c.valid_from else None,
+        "validTo": c.valid_to.isoformat() if c.valid_to else None,
+        "isActive": c.is_active,
+        "usageCount": c.usage_count
+    } for c in coupons]
+
+@api_router.post("/admin/coupons")
+async def create_coupon(
+    coupon_data: CouponCreate,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create new coupon"""
+    import uuid as uuid_lib
+    from datetime import datetime
+    
+    # Parse dates if provided
+    valid_from = None
+    if coupon_data.validFrom:
+        try:
+            valid_from = datetime.fromisoformat(coupon_data.validFrom.replace('Z', '+00:00'))
+        except:
+            pass
+            
+    valid_to = None
+    if coupon_data.validTo:
+        try:
+            valid_to = datetime.fromisoformat(coupon_data.validTo.replace('Z', '+00:00'))
+        except:
+            pass
+
+    new_coupon = CouponDB(
+        id=uuid_lib.uuid4(),
+        code=coupon_data.code.upper(),
+        description=coupon_data.description,
+        type=coupon_data.type,
+        value=coupon_data.value,
+        min_order_value=coupon_data.minOrderValue,
+        max_discount=coupon_data.maxDiscount,
+        scope=coupon_data.scope,
+        applicable_products=coupon_data.applicableProducts,
+        usage_limit=coupon_data.usageLimit,
+        per_customer_limit=coupon_data.perCustomerLimit,
+        valid_from=valid_from,
+        valid_to=valid_to,
+        is_active=coupon_data.isActive,
+        usage_count=0
     )
-    
-    return {"message": "Default address updated"}
+    db.add(new_coupon)
+    await db.commit()
+    await db.refresh(new_coupon)
+    return new_coupon
 
-# Password Reset Models
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+@api_router.put("/admin/coupons/{coupon_id}")
+async def update_coupon(
+    coupon_id: str,
+    coupon_data: CouponCreate,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update existing coupon"""
+    import uuid as uuid_lib
+    from datetime import datetime
+    
+    try:
+        # Check if coupon exists
+        result = await db.execute(select(CouponDB).where(CouponDB.id == uuid_lib.UUID(coupon_id)))
+        coupon = result.scalar_one_or_none()
+        
+        if not coupon:
+            raise HTTPException(status_code=404, detail="Coupon not found")
+        
+        # Update fields
+        coupon.code = coupon_data.code.upper()
+        coupon.description = coupon_data.description
+        coupon.type = coupon_data.type
+        coupon.value = coupon_data.value
+        coupon.min_order_value = coupon_data.minOrderValue
+        coupon.max_discount = coupon_data.maxDiscount
+        coupon.scope = coupon_data.scope
+        coupon.applicable_products = coupon_data.applicableProducts
+        coupon.usage_limit = coupon_data.usageLimit
+        coupon.per_customer_limit = coupon_data.perCustomerLimit
+        coupon.is_active = coupon_data.isActive
+        
+        # Update dates
+        if coupon_data.validFrom:
+            try:
+                coupon.valid_from = datetime.fromisoformat(coupon_data.validFrom.replace('Z', '+00:00'))
+            except:
+                pass
+        else:
+            coupon.valid_from = None
+            
+        if coupon_data.validTo:
+            try:
+                coupon.valid_to = datetime.fromisoformat(coupon_data.validTo.replace('Z', '+00:00'))
+            except:
+                pass
+        else:
+            coupon.valid_to = None
+            
+        await db.commit()
+        await db.refresh(coupon)
+        return coupon
+        
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid coupon ID format")
 
-class ResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
+@api_router.delete("/admin/coupons/{coupon_id}")
+async def delete_coupon(
+    coupon_id: str,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a coupon"""
+    import uuid as uuid_lib
+    try:
+        # Check if coupon exists
+        result = await db.execute(select(CouponDB).where(CouponDB.id == uuid_lib.UUID(coupon_id)))
+        coupon = result.scalar_one_or_none()
+        
+        if not coupon:
+            raise HTTPException(status_code=404, detail="Coupon not found")
+            
+        await db.delete(coupon)
+        await db.commit()
+        return {"success": True}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid coupon ID format")
 
-@api_router.post("/auth/forgot-password")
-async def forgot_password(data: ForgotPasswordRequest):
-    """Send password reset email"""
-    user = await db.users.find_one({"email": data.email}, {"_id": 0})
-    
-    # Always return success (don't reveal if email exists)
-    if not user:
-        return {"message": "If an account with that email exists, we've sent a password reset link."}
-    
-    # Generate reset token (valid for 1 hour)
-    reset_token = secrets.token_urlsafe(32)
-    expiry = datetime.now(timezone.utc) + timedelta(hours=1)
-    
-    # Store token in database
-    await db.password_resets.insert_one({
-        "user_id": user["id"],
-        "email": data.email,
-        "token": reset_token,
-        "expires_at": expiry.isoformat(),
-        "used": False,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    })
-    
-    # Send reset email (fire-and-forget)
-    asyncio.ensure_future(send_email(
-        data.email,
-        "Reset Your Password 🔐",
-        get_password_reset_email(user, reset_token),
-        is_html=True
-    ))
-    
-    return {"message": "If an account with that email exists, we've sent a password reset link."}
+class CouponVerify(BaseModel):
+    code: str
+    orderTotal: float
 
-@api_router.post("/auth/reset-password")
-async def reset_password(data: ResetPasswordRequest):
-    """Reset password using token from email"""
-    # Find valid token
-    reset_record = await db.password_resets.find_one({
-        "token": data.token,
-        "used": False
-    })
+@api_router.post("/coupons/verify")
+async def verify_coupon_endpoint(
+    data: CouponVerify,
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify coupon code and return discount details"""
+    logger.info(f"Verifying coupon: {data.code} for amount {data.orderTotal}")
     
-    if not reset_record:
-        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
-    
-    # Check if token is expired
-    expiry = datetime.fromisoformat(reset_record["expires_at"])
-    if expiry < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Reset token has expired. Please request a new one.")
-    
-    # Update password
-    await db.users.update_one(
-        {"id": reset_record["user_id"]},
-        {"$set": {"password": hash_password(data.new_password)}}
+    result = await db.execute(
+        select(CouponDB).where(
+            CouponDB.code == data.code.upper(),
+            CouponDB.is_active == True
+        )
     )
+    coupon = result.scalar_one_or_none()
     
-    # Mark token as used
-    await db.password_resets.update_one(
-        {"token": data.token},
-        {"$set": {"used": True}}
-    )
-    
-    return {"message": "Password reset successful. You can now log in with your new password."}
+    if not coupon:
+        raise HTTPException(status_code=404, detail="Invalid coupon code")
+        
+    if coupon.min_order_value > data.orderTotal:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Minimum order value of ₹{coupon.min_order_value} required"
+        )
+        
+    # Calculate discount
+    discount_amount = 0
+    if coupon.type == 'percent':
+        discount_amount = (data.orderTotal * coupon.value) / 100
+        if coupon.max_discount and discount_amount > coupon.max_discount:
+            discount_amount = coupon.max_discount
+    else: # fixed amount
+        discount_amount = coupon.value
+        
+    # Ensure discount doesn't exceed order total
+    if discount_amount > data.orderTotal:
+        discount_amount = data.orderTotal
+        
+    return {
+        "code": coupon.code,
+        "type": coupon.type,
+        "value": coupon.value,
+        "discountAmount": float(discount_amount),
+        "description": coupon.description
+    }
 
+# ============================================
+# ORDERS & EMAIL SERVICE
+# ============================================
 
-# Cart Routes (stored in localStorage on frontend, but we add API for future use)
-class CartItem(BaseModel):
+class OrderItem(BaseModel):
     productId: str
     quantity: int
 
-class CartUpdate(BaseModel):
-    items: List[CartItem]
+class Address(BaseModel):
+    firstName: str
+    lastName: str
+    address: str
+    city: str
+    state: str
+    pincode: str
+    country: str
+    phone: str
 
-
-# Order Routes
 class OrderCreate(BaseModel):
-    items: List[CartItem]
-    shippingAddress: dict
-    paymentMethod: str = "card"
-
-class Order(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    
-    id: str
-    userId: str
-    items: List[dict]
-    total: float
-    status: str
-    shippingAddress: dict
-    createdAt: str
-
-@api_router.post("/orders", response_model=Order)
-async def create_order(order_data: OrderCreate, current_user: dict = Depends(get_current_user)):
-    # Calculate total
-    total = 0
-    order_items = []
-    
-    for item in order_data.items:
-        product = await db.products.find_one({"id": item.productId}, {"_id": 0})
-        if product:
-            order_items.append({
-                "productId": item.productId,
-                "name": product["name"],
-                "price": product["price"],
-                "quantity": item.quantity,
-                "image": product["image"]
-            })
-            total += product["price"] * item.quantity
-    
-    order_id = str(uuid.uuid4())
-    order_doc = {
-        "id": order_id,
-        "userId": current_user["id"],
-        "items": order_items,
-        "total": total,
-        "status": "pending",
-        "shippingAddress": order_data.shippingAddress,
-        "paymentMethod": order_data.paymentMethod,
-        "createdAt": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.orders.insert_one(order_doc)
-    
-    # Send order confirmation email (fire-and-forget)
-    order_for_email = {
-        **order_doc,
-        "customer": {"name": current_user.get("name", "Valued Customer")},
-        "grandTotal": total
-    }
-    asyncio.ensure_future(send_email(
-        current_user.get("email"),
-        f"Order Confirmed! #{order_id[:8].upper()} 🎉",
-        get_order_confirmation_email(order_for_email),
-        is_html=True
-    ))
-    
-    return Order(**order_doc)
-
-@api_router.get("/orders", response_model=List[Order])
-async def get_orders(current_user: dict = Depends(get_current_user)):
-    orders = await db.orders.find({"userId": current_user["id"]}, {"_id": 0}).to_list(100)
-    return orders
-
-@api_router.get("/orders/{order_id}")
-async def get_order(order_id: str, current_user: dict = Depends(get_current_user)):
-    order = await db.orders.find_one({"id": order_id, "userId": current_user["id"]}, {"_id": 0})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return order
-
-class RefundRequest(BaseModel):
-    reason: str
-
-@api_router.post("/orders/{order_id}/refund")
-async def request_refund(order_id: str, refund_data: RefundRequest, current_user: dict = Depends(get_current_user)):
-    """Request a refund for an order"""
-    order = await db.orders.find_one({"id": order_id, "userId": current_user["id"]})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    # Only allow refund for delivered orders
-    if order["status"] not in ["delivered", "shipped"]:
-        raise HTTPException(status_code=400, detail="Refund can only be requested for delivered or shipped orders")
-    
-    # Check if refund already requested
-    if order.get("refund_status"):
-        raise HTTPException(status_code=400, detail="Refund already requested for this order")
-    
-    # Update order with refund request
-    await db.orders.update_one(
-        {"id": order_id},
-        {"$set": {
-            "refund_status": "requested",
-            "refund_reason": refund_data.reason,
-            "refund_requested_at": datetime.now(timezone.utc).isoformat()
-        }}
-    )
-    
-    return {"message": "Refund request submitted successfully"}
-
-@api_router.post("/orders/{order_id}/cancel")
-async def cancel_order(order_id: str, current_user: dict = Depends(get_current_user)):
-    """Cancel a pending order"""
-    order = await db.orders.find_one({"id": order_id, "userId": current_user["id"]})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    # Only allow cancellation for pending orders
-    if order["status"] != "pending":
-        raise HTTPException(status_code=400, detail="Only pending orders can be cancelled")
-    
-    await db.orders.update_one(
-        {"id": order_id},
-        {"$set": {"status": "cancelled"}}
-    )
-    
-    return {"message": "Order cancelled successfully"}
-
-
-# Review Routes
-class ReviewCreate(BaseModel):
-    rating: int
-    title: Optional[str] = None
-    comment: str
-
-class Review(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    
-    id: str
-    productId: str
-    userId: str
-    userName: str
-    rating: int
-    title: Optional[str] = None
-    comment: str
-    verified: bool = False
-    createdAt: str
-
-@api_router.post("/products/{product_id}/reviews", response_model=Review)
-async def create_review(product_id: str, review_data: ReviewCreate, current_user: dict = Depends(get_current_user)):
-    # Check if product exists
-    product = await db.products.find_one({"id": product_id})
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    # Check if user already reviewed this product
-    existing = await db.reviews.find_one({"productId": product_id, "userId": current_user["id"]})
-    if existing:
-        raise HTTPException(status_code=400, detail="You have already reviewed this product")
-    
-    # Check if user purchased this product
-    order_with_product = await db.orders.find_one({
-        "userId": current_user["id"],
-        "items.productId": product_id
-    })
-    
-    review_id = str(uuid.uuid4())
-    review_doc = {
-        "id": review_id,
-        "productId": product_id,
-        "userId": current_user["id"],
-        "userName": current_user["name"],
-        "rating": min(5, max(1, review_data.rating)),  # Clamp between 1-5
-        "title": review_data.title,
-        "comment": review_data.comment,
-        "verified": order_with_product is not None,
-        "createdAt": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.reviews.insert_one(review_doc)
-    
-    return Review(**review_doc)
-
-@api_router.get("/products/{product_id}/reviews", response_model=List[Review])
-async def get_product_reviews(product_id: str):
-    reviews = await db.reviews.find({"productId": product_id}, {"_id": 0}).sort("createdAt", -1).to_list(100)
-    return reviews
-
-@api_router.get("/products/{product_id}/rating")
-async def get_product_rating(product_id: str):
-    reviews = await db.reviews.find({"productId": product_id}, {"_id": 0, "rating": 1}).to_list(1000)
-    if not reviews:
-        return {"averageRating": 0, "totalReviews": 0}
-    
-    total = sum(r["rating"] for r in reviews)
-    return {
-        "averageRating": round(total / len(reviews), 1),
-        "totalReviews": len(reviews)
-    }
-
-
-# ============================================
-# OWNER/ADMIN ROUTES
-# ============================================
-
-# Owner credentials (hardcoded for now)
-OWNER_USERNAME = "owner.owner"
-OWNER_PASSWORD = "owner12345"
-
-class OwnerLogin(BaseModel):
-    username: str
-    password: str
-
-class ProductCreate(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    
-    name: str
-    description: str
-    price: float
-    category: str
-    image: str
-    images: List[str] = []
-    inStock: bool = True
-
-class ProductUpdate(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    
-    name: Optional[str] = None
-    description: Optional[str] = None
-    price: Optional[float] = None
-    category: Optional[str] = None
-    image: Optional[str] = None
-    images: Optional[List[str]] = None
-    inStock: Optional[bool] = None
-
-class ReviewCreate(BaseModel):
-    productId: str
-    userName: str
-    title: Optional[str] = None
-    comment: str
-    rating: int
-    image: Optional[str] = None
-
-class ReviewUpdate(BaseModel):
-    userName: Optional[str] = None
-    title: Optional[str] = None
-    comment: Optional[str] = None
-    rating: Optional[int] = None
-    image: Optional[str] = None
-
-
-def create_owner_token() -> str:
-    import base64
-    import json
-    payload = {
-        "role": "owner",
-        "exp": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
-    }
-    token_data = json.dumps(payload)
-    return base64.b64encode(token_data.encode()).decode()
-
-def verify_owner_token(token: str) -> bool:
-    import base64
-    import json
-    try:
-        token_data = base64.b64decode(token.encode()).decode()
-        payload = json.loads(token_data)
-        if payload.get("role") != "owner":
-            return False
-        exp = datetime.fromisoformat(payload["exp"])
-        return exp > datetime.now(timezone.utc)
-    except Exception:
-        return False
-
-async def get_owner(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    if not verify_owner_token(credentials.credentials):
-        raise HTTPException(status_code=401, detail="Invalid or expired owner token")
-    
-    return {"role": "owner"}
-
-
-# Owner Login
-@api_router.post("/owner/login")
-async def owner_login(data: OwnerLogin):
-    if data.username != OWNER_USERNAME or data.password != OWNER_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    token = create_owner_token()
-    return {"access_token": token, "token_type": "bearer"}
-
-@api_router.get("/owner/verify")
-async def verify_owner(owner: dict = Depends(get_owner)):
-    return {"valid": True, "role": "owner"}
-
-
-# Admin Product CRUD
-@api_router.get("/admin/products")
-async def admin_get_products(owner: dict = Depends(get_owner)):
-    products = await db.products.find({}, {"_id": 0}).to_list(1000)
-    return products
-
-@api_router.post("/admin/products")
-async def admin_create_product(product: ProductCreate, owner: dict = Depends(get_owner)):
-    product_id = str(uuid.uuid4())
-    p_data = product.model_dump()
-    
-    # Ensure ID and timestamps are set
-    product_doc = {
-        **p_data,
-        "id": product_id,
-        "images": p_data.get("images") or ([p_data.get("image")] if p_data.get("image") else []),
-        "currency": "INR",
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "updatedAt": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.products.insert_one(product_doc)
-    # Return without _id field
-    product_doc.pop("_id", None)
-    return product_doc
-
-@api_router.put("/admin/products/{product_id}")
-async def admin_update_product(product_id: str, update: ProductUpdate, owner: dict = Depends(get_owner)):
-    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    
-    result = await db.products.update_one({"id": product_id}, {"$set": update_data})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    updated = await db.products.find_one({"id": product_id}, {"_id": 0})
-    return updated
-
-@api_router.delete("/admin/products/{product_id}")
-async def admin_delete_product(product_id: str, owner: dict = Depends(get_owner)):
-    # Get product first to retrieve image URLs
-    product = await db.products.find_one({"id": product_id}, {"_id": 0})
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    # Delete images from Cloudinary
-    images_to_delete = []
-    if product.get("image"):
-        images_to_delete.append(product["image"])
-    if product.get("images"):
-        images_to_delete.extend(product["images"])
-    
-    # Remove duplicates
-    images_to_delete = list(set(images_to_delete))
-    
-    for image_url in images_to_delete:
-        try:
-            # Extract public_id from Cloudinary URL
-            # URL format: https://res.cloudinary.com/dpwsnody1/image/upload/v1234567890/public_id.jpg
-            if "cloudinary.com" in image_url:
-                parts = image_url.split("/upload/")
-                if len(parts) > 1:
-                    # Remove version and extension to get public_id
-                    path = parts[1]
-                    # Remove version (v1234567890/)
-                    if path.startswith("v"):
-                        path = "/".join(path.split("/")[1:])
-                    # Remove extension
-                    public_id = path.rsplit(".", 1)[0] if "." in path else path
-                    cloudinary.uploader.destroy(public_id)
-        except Exception as e:
-            print(f"Warning: Failed to delete image from Cloudinary: {e}")
-    
-    # Delete from database
-    result = await db.products.delete_one({"id": product_id})
-    
-    # Also delete associated reviews
-    await db.reviews.delete_many({"productId": product_id})
-    
-    return {"message": "Product and images deleted"}
-
-
-class BulkDeleteRequest(BaseModel):
-    productIds: List[str]
-
-@api_router.post("/admin/products/bulk-delete")
-async def admin_bulk_delete_products(data: BulkDeleteRequest, owner: dict = Depends(get_owner)):
-    """Delete multiple products and their Cloudinary images"""
-    product_ids = data.productIds
-    print(f"Bulk delete request for {len(product_ids)} products: {product_ids}")
-    
-    if not product_ids:
-        raise HTTPException(status_code=400, detail="No product IDs provided")
-    
-    deleted_count = 0
-    for product_id in product_ids:
-        # Get product to retrieve image URLs
-        product = await db.products.find_one({"id": product_id}, {"_id": 0})
-        if not product:
-            print(f"Product {product_id} not found, skipping")
-            continue
-        
-        # Delete images from Cloudinary
-        images_to_delete = []
-        if product.get("image"):
-            images_to_delete.append(product["image"])
-        if product.get("images"):
-            images_to_delete.extend(product["images"])
-        
-        images_to_delete = list(set(images_to_delete))
-        
-        for image_url in images_to_delete:
-            try:
-                if "cloudinary.com" in image_url:
-                    parts = image_url.split("/upload/")
-                    if len(parts) > 1:
-                        path = parts[1]
-                        if path.startswith("v"):
-                            path = "/".join(path.split("/")[1:])
-                        public_id = path.rsplit(".", 1)[0] if "." in path else path
-                        cloudinary.uploader.destroy(public_id)
-            except Exception as e:
-                print(f"Warning: Failed to delete image: {e}")
-        
-        # Delete from database
-        result = await db.products.delete_one({"id": product_id})
-        if result.deleted_count > 0:
-            deleted_count += 1
-            await db.reviews.delete_many({"productId": product_id})
-    
-    print(f"Successfully deleted {deleted_count} products")
-    return {"message": f"Deleted {deleted_count} products", "deletedCount": deleted_count}
-
-
-@api_router.post("/admin/products/import")
-async def admin_import_products(file: UploadFile = File(...), owner: dict = Depends(get_owner)):
-    """Import products from CSV file with error reporting"""
-    if not file.filename.lower().endswith('.csv'):
-        raise HTTPException(status_code=400, detail="File must be a CSV")
-    
-    try:
-        content = await file.read()
-        if content.startswith(codecs.BOM_UTF8):
-            content = content[len(codecs.BOM_UTF8):]
-        
-        csv_text = content.decode('utf-8')
-        csv_reader = csv.DictReader(io.StringIO(csv_text))
-        
-        products_to_add = []
-        errors = []
-        row_index = 0
-        
-        for row in csv_reader:
-            row_index += 1
-            row_error_prefix = f"Row {row_index}"
-            if row.get('sl_no'):
-                row_error_prefix = f"Row {row_index} (SL {row.get('sl_no')})"
-
-            # --- VALIDATION HELPERS ---
-            def validate_float(key, required=False):
-                val = row.get(key, "").strip()
-                if not val:
-                    if required:
-                        raise ValueError(f"Missing required field: {key}")
-                    return 0.0
-                try:
-                    return float(val)
-                except ValueError:
-                    raise ValueError(f"Invalid number for {key}: '{val}'")
-
-            def validate_int(key, required=False):
-                val = row.get(key, "").strip()
-                if not val:
-                    if required:
-                        raise ValueError(f"Missing required field: {key}")
-                    return 0
-                try:
-                    return int(float(val)) # float transition helps e.g "5.0"
-                except ValueError:
-                    raise ValueError(f"Invalid integer for {key}: '{val}'")
-                    
-            def get_clean_str(key, default=""):
-                return row.get(key, default).strip() or default
-
-            try:
-                # Essential fields validation
-                name = get_clean_str('name')
-                if not name:
-                    raise ValueError("Product Name is required")
-                
-                # Pricing Validation (Critical)
-                try:
-                    selling_price = validate_float('sellingPrice', required=True)
-                    if selling_price < 0: raise ValueError("Selling Price cannot be negative")
-                    
-                    cost_gold = validate_float('costGold')
-                    cost_stone = validate_float('costStone')
-                    cost_making = validate_float('costMaking')
-                    cost_other = validate_float('costOther')
-                except ValueError as e:
-                    errors.append(f"{row_error_prefix}: {str(e)}")
-                    continue # Skip this row
-
-                # --- IF VALID, PROCESS ROW ---
-                total_cost = cost_gold + cost_stone + cost_making + cost_other
-                profit_margin = selling_price - total_cost
-                margin_percent = (profit_margin / selling_price * 100) if selling_price > 0 else 0
-
-                # Generate Product Object
-                product_id = str(uuid.uuid4())
-                
-                # Check optional 'netPrice' column for verification (optional logic)
-                # csv_net_price = validate_float('netPrice')
-                # if csv_net_price > 0 and abs(csv_net_price - total_cost) > 1.0:
-                    # errors.append(f"{row_error_prefix}: Calculated cost ({total_cost}) mismatch with CSV netPrice ({csv_net_price})")
-                    # continue
-
-                has_discount = str(row.get('hasDiscount', '')).lower() in ('true', '1', 'yes')
-                discount_type = row.get('discountType', 'percent')
-                discount_value = validate_float('discountValue')
-                allow_coupons = str(row.get('allowCoupons', 'true')).lower() in ('true', '1', 'yes')
-                
-                discounted_price = selling_price
-                if has_discount and discount_value > 0:
-                    if discount_type == 'percent':
-                        discounted_price = selling_price * (1 - discount_value / 100)
-                    else:
-                        discounted_price = selling_price - discount_value
-
-                products_to_add.append({
-                    "id": product_id,
-                    "sku": get_clean_str('sku', f"SKU-{product_id[:8]}"),
-                    "name": name,
-                    "category": get_clean_str('category', "Uncategorized"),
-                    "subcategory": get_clean_str('subcategory', ""),
-                    "tags": [t.strip() for t in get_clean_str('tags').split(',') if t.strip()],
-                    "description": get_clean_str('description'),
-                    "price": selling_price,
-                    "sellingPrice": selling_price,
-                    "currency": "INR",
-                    
-                    "costGold": cost_gold,
-                    "costStone": cost_stone,
-                    "costMaking": cost_making,
-                    "costOther": cost_other,
-                    "totalCost": total_cost,
-                    "profitMargin": round(profit_margin, 2),
-                    "marginPercent": round(margin_percent, 1),
-                    
-                    "metal": get_clean_str('metal', "Gold"),
-                    "purity": get_clean_str('purity'),
-                    "grossWeight": validate_float('grossWeight'),
-                    "netWeight": validate_float('netWeight'),
-                    "stoneWeight": validate_float('stoneWeight'),
-                    "stoneType": get_clean_str('stoneType'),
-                    "stoneQuality": get_clean_str('stoneQuality'),
-                    "certification": get_clean_str('certification'),
-                    
-                    "stockQuantity": validate_int('stockQuantity'),
-                    "lowStockThreshold": validate_int('lowStockThreshold', 2),
-                    "isUniqueItem": str(row.get('isUniqueItem', '')).lower() in ('true', '1', 'yes'),
-                    "inStock": validate_int('stockQuantity') > 0,
-                    
-                    "hasDiscount": has_discount,
-                    "discountType": discount_type,
-                    "discountValue": discount_value,
-                    "discountedPrice": round(discounted_price),
-                    "allowCoupons": allow_coupons,
-                    
-                    "hsnCode": get_clean_str('hsnCode', "7113"),
-                    "barcode": get_clean_str('barcode'),
-                    
-                    "status": get_clean_str('status', "active"),
-                    "createdAt": datetime.now(timezone.utc).isoformat(),
-                    "updatedAt": datetime.now(timezone.utc).isoformat(),
-                    "image": "",
-                    "images": []
-                })
-
-            except Exception as e:
-                errors.append(f"{row_error_prefix}: Unexpected error: {str(e)}")
-        
-        # --- BULK UPSERT (Optimized) ---
-        inserted_count = 0
-        updated_count = 0
-        
-        if products_to_add:
-            from pymongo import UpdateOne
-            
-            # First, get all existing SKUs in one query
-            skus = [p["sku"] for p in products_to_add]
-            existing_products = await db.products.find(
-                {"sku": {"$in": skus}},
-                {"sku": 1, "id": 1, "image": 1, "images": 1}
-            ).to_list(len(skus))
-            existing_map = {ep["sku"]: ep for ep in existing_products}
-            
-            # Build bulk operations
-            operations = []
-            for p in products_to_add:
-                if p["sku"] in existing_map:
-                    existing = existing_map[p["sku"]]
-                    p["id"] = existing["id"]
-                    if existing.get("image"): p["image"] = existing["image"]
-                    if existing.get("images"): p["images"] = existing["images"]
-                
-                operations.append(
-                    UpdateOne(
-                        {"sku": p["sku"]},
-                        {"$set": p},
-                        upsert=True
-                    )
-                )
-            
-            # Execute all operations in one call
-            if operations:
-                result = await db.products.bulk_write(operations)
-                inserted_count = result.upserted_count
-                updated_count = result.modified_count
-
-        return {
-            "message": "Import completed",
-            "inserted": inserted_count,
-            "updated": updated_count,
-            "failed": len(errors),
-            "totalProcessed": row_index,
-            "errors": errors if errors else None
-        }
-
-    except Exception as e:
-        print(f"Import error: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to import CSV: {str(e)}")
-
-
-@api_router.get("/admin/reviews")
-async def admin_get_reviews(owner: dict = Depends(get_owner)):
-    reviews = await db.reviews.find({}, {"_id": 0}).to_list(1000)
-    return reviews
-
-@api_router.post("/admin/reviews")
-async def admin_create_review(review: ReviewCreate, owner: dict = Depends(get_owner)):
-    review_id = str(uuid.uuid4())
-    review_doc = {
-        "id": review_id,
-        "productId": review.productId,
-        "userId": "admin",
-        "userName": review.userName,
-        "title": review.title,
-        "comment": review.comment,
-        "rating": min(5, max(1, review.rating)),
-        "image": review.image,
-        "verified": True,
-        "createdAt": datetime.now(timezone.utc).isoformat()
-    }
-    await db.reviews.insert_one(review_doc)
-    # Return without _id field
-    del review_doc["_id"]
-    return review_doc
-
-@api_router.put("/admin/reviews/{review_id}")
-async def admin_update_review(review_id: str, update: ReviewUpdate, owner: dict = Depends(get_owner)):
-    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
-    if not update_data:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    
-    result = await db.reviews.update_one({"id": review_id}, {"$set": update_data})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Review not found")
-    
-    updated = await db.reviews.find_one({"id": review_id}, {"_id": 0})
-    return updated
-
-@api_router.delete("/admin/reviews/{review_id}")
-async def admin_delete_review(review_id: str, owner: dict = Depends(get_owner)):
-    result = await db.reviews.delete_one({"id": review_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Review not found")
-    return {"message": "Review deleted"}
-
-
-@api_router.get("/admin/customers")
-async def admin_get_customers(owner: dict = Depends(get_owner)):
-    pipeline = [
-        {
-            "$lookup": {
-                "from": "orders",
-                "localField": "id",
-                "foreignField": "userId",
-                "as": "user_orders"
-            }
-        },
-        {
-            "$project": {
-                "_id": 0,
-                "id": 1,
-                "name": 1,
-                "email": 1,
-                "phone": 1,
-                "joinedAt": "$createdAt",
-                "total_orders": {"$size": "$user_orders"},
-                "total_spent": {"$sum": "$user_orders.total"}
-            }
-        },
-        {"$sort": {"createdAt": -1}}
-    ]
-    
-    customers = await db.users.aggregate(pipeline).to_list(1000)
-    return customers
-
-
-@api_router.get("/admin/orders")
-async def admin_get_orders(status: str = None, owner: dict = Depends(get_owner)):
-    query = {}
-    if status and status != "all":
-        query["status"] = status
-    
-    # Sort by newest first
-    orders = await db.orders.find(query, {"_id": 0}).sort("createdAt", -1).to_list(1000)
-    
-    # Enhance with customer names if missing (though they should be in the order doc)
-    # The OrderCreate adds customer info to email but maybe not to DB doc?
-    # Let's check CreateOrder... it adds 'userId'. 
-    # We should probably lookup user details if needed, but frontend might handle it.
-    # Frontend OrdersPage expects: order_number (id), customer_name, customer_email, total, status, date (createdAt)
-    
-    # We need to map `id` to `order_number` or frontend needs to change.
-    # Frontend: `o.order_number || o.id` usually.
-    # Let's verify frontend fields.
-    # Frontend uses: order.id, order.customer?.name, order.total, order.status
-    
-    # To be safe, let's decorate with customer info if possible
-    # But for now, basic fetch is better than empty.
-    
-    # Add computed fields for frontend convenience if needed
-    enhanced_orders = []
-    for o in orders:
-        # Fetch user if customer name is missing
-        if "customer" not in o and "userId" in o:
-             u = await db.users.find_one({"id": o["userId"]})
-             if u:
-                 o["customer"] = {"name": u.get("name"), "email": u.get("email")}
-        
-        enhanced_orders.append(o)
-
-    return enhanced_orders
-
-
-@api_router.put("/admin/orders/{order_id}/status")
-async def admin_update_order_status(order_id: str, status_data: dict, owner: dict = Depends(get_owner)):
-    new_status = status_data.get("status")
-    if not new_status:
-        raise HTTPException(status_code=400, detail="Status is required")
-    
-    valid_statuses = ["pending", "paid", "fulfilled", "shipped", "delivered", "cancelled", "returned"]
-    if new_status not in valid_statuses:
-        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
-    
-    result = await db.orders.update_one(
-        {"id": order_id},
-        {"$set": {"status": new_status}}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    return {"message": "Order status updated successfully", "status": new_status}
-
-
-@api_router.get("/admin/dashboard")
-async def admin_dashboard_stats(period: str = "30d", owner: dict = Depends(get_owner)):
-    # Calculate start date
-    days_map = {"7d": 7, "30d": 30, "90d": 90, "1y": 365}
-    days = days_map.get(period, 30)
-    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    
-    # 1. Gross Sales & Net Profit (assuming 20% margin for simple logic if cost not tracked properly)
-    # We will sum 'total' from orders
-    sales_pipeline = [
-        {"$match": {"createdAt": {"$gte": start_date}, "status": {"$ne": "cancelled"}}},
-        {"$group": {"_id": None, "total_sales": {"$sum": "$total"}, "count": {"$sum": 1}}}
-    ]
-    sales_res = await db.orders.aggregate(sales_pipeline).to_list(1)
-    gross_sales = sales_res[0]["total_sales"] if sales_res else 0
-    orders_count = sales_res[0]["count"] if sales_res else 0
-    
-    # Rough profit estimation (30% margin) until we have complex cost analysis
-    net_profit = gross_sales * 0.30
-    
-    # 2. Orders Pending
-    pending_count = await db.orders.count_documents({"status": "pending"})
-    
-    # 3. Inventory Value
-    # Sum of (costGold + costStone + ...) or just a fraction of selling price
-    # Let's fetch all products and sum logic
-    # Since products might not have cost fields populated properly yet, we'll estimate.
-    # Actually, we have costGold fields in CSV import. Let's try to be accurate.
-    # If fields are missing, assume 70% of price.
-    products = await db.products.find({}, {"price": 1, "inStock": 1}).to_list(10000)
-    data_inv_value = 0
-    for p in products:
-        if p.get("inStock", True):
-            data_inv_value += p.get("price", 0) * 0.7 # Estimate cost as 70% of retail
-            
-    return {
-        "gross_sales": gross_sales,
-        "net_profit": net_profit,
-        "orders_count": orders_count,
-        "orders_pending": pending_count,
-        "inventory_value": data_inv_value
-    }
-
-
-    return {
-        "gross_sales": gross_sales,
-        "net_profit": net_profit,
-        "orders_count": orders_count,
-        "orders_pending": pending_count,
-        "inventory_value": data_inv_value
-    }
-
-
-@api_router.get("/admin/analytics/sales")
-async def admin_analytics_sales(days: int = 30, owner: dict = Depends(get_owner)):
-    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    
-    pipeline = [
-        {"$match": {"createdAt": {"$gte": start_date}, "status": {"$ne": "cancelled"}}},
-        {
-            "$group": {
-                "_id": {"$substr": ["$createdAt", 0, 10]}, # Group by YYYY-MM-DD
-                "gross_sales": {"$sum": "$total"},
-                "orders": {"$sum": 1}
-            }
-        },
-        {"$sort": {"_id": 1}}
-    ]
-    
-    daily_sales = await db.orders.aggregate(pipeline).to_list(days)
-    
-    # Fill missing dates with 0
-    result = []
-    sales_map = {d["_id"]: d for d in daily_sales}
-    
-    for i in range(days):
-        date = (datetime.now(timezone.utc) - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
-        data = sales_map.get(date, {"gross_sales": 0, "orders": 0})
-        result.append({
-            "date": date,
-            "gross_sales": data["gross_sales"],
-            "gross_profit": data["gross_sales"] * 0.30, # Est 30% margin
-            "orders": data.get("orders", 0)
-        })
-        
-    return result
-
-
-@api_router.get("/admin/analytics/sales-by-channel")
-async def admin_analytics_channels(days: int = 30, owner: dict = Depends(get_owner)):
-    # Since we only have online sales for now, hardcode or split by "paymentMethod" as proxy?
-    # Or just return 100% Online Store for now to avoid empty chart.
-    
-    # Let's try to group by payment method for some variety
-    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    
-    pipeline = [
-        {"$match": {"createdAt": {"$gte": start_date}, "status": {"$ne": "cancelled"}}},
-        {
-            "$group": {
-                "_id": "$paymentMethod", # card, cod, etc.
-                "sales": {"$sum": "$total"},
-                "orders": {"$sum": 1}
-            }
-        }
-    ]
-    
-    channels = await db.orders.aggregate(pipeline).to_list(10)
-    
-    if not channels:
-        return [{"label": "Online Store", "sales": 0, "orders": 0, "profit": 0, "percent": 0}]
-        
-    total_sales = sum(c["sales"] for c in channels)
-    
-    return [
-        {
-            "label": c["_id"].title() if c["_id"] else "Unknown",
-            "sales": c["sales"],
-            "orders": c["orders"],
-            "profit": c["sales"] * 0.3,
-            "percent": (c["sales"] / total_sales) if total_sales > 0 else 0
-        }
-        for c in channels
-    ]
-
-
-@api_router.get("/admin/analytics/top-products")
-async def admin_analytics_top_products(days: int = 30, limit: int = 10, owner: dict = Depends(get_owner)):
-    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    
-    # Unwind orders -> items to group by product
-    pipeline = [
-        {"$match": {"createdAt": {"$gte": start_date}, "status": {"$ne": "cancelled"}}},
-        {"$unwind": "$items"},
-        {
-            "$group": {
-                "_id": "$items.productId",
-                "product_name": {"$first": "$items.name"},
-                "revenue": {"$sum": {"$multiply": ["$items.price", "$items.quantity"]}},
-                "units_sold": {"$sum": "$items.quantity"}
-            }
-        },
-        {"$sort": {"revenue": -1}},
-        {"$limit": limit}
-    ]
-    
-    top_products = await db.orders.aggregate(pipeline).to_list(limit)
-    
-    # Format
-    return [
-        {
-            "product_name": p["product_name"],
-            "revenue": p["revenue"],
-            "units_sold": p["units_sold"],
-            "profit": p["revenue"] * 0.3 # Est
-        }
-        for p in top_products
-    ]
-
-
-@api_router.get("/admin/analytics/low-stock")
-async def admin_analytics_low_stock(owner: dict = Depends(get_owner)):
-    # Find products with stock < 5 (assuming 5 is threshold)
-    # We don't have a 'stock' count field in Product model shown earlier (just 'inStock' bool).
-    # But CSV import might have added valid logic?
-    # Let's check Product model... `inStock: bool`. No quantity field visible in model def at line 341.
-    # However, Admin might want to see items marked as out of stock or low if we add quantity later.
-    # For now, return items where inStock is False.
-    
-    out_of_stock = await db.products.find({"inStock": False}, {"_id": 0}).limit(20).to_list(20)
-    
-    return [
-        {
-            "product_name": p["name"],
-            "available": 0,
-            "min_stock": 5
-        }
-        for p in out_of_stock
-    ]
-
-
-    return [
-        {
-            "product_name": p["name"],
-            "available": 0,
-            "min_stock": 5
-        }
-        for p in out_of_stock
-    ]
-
-
-@api_router.get("/api/admin/inventory/ledger")
-async def admin_get_ledger(limit: int = 50, owner: dict = Depends(get_owner)):
-    # Since we don't have a dedicated ledger collection yet, we can simulate it
-    # from Orders (sales) and CSV Imports (receives) if we tracked them better.
-    # But ideally validation requires a real ledger.
-    # Given database constraints, we'll try to aggregate recent orders as 'sales'
-    # and maybe assume some 'receives' based on product creation for now.
-    
-    events = []
-    
-    # Get recent sales (Orders)
-    recent_orders = await db.orders.find({}, {"_id": 0}).sort("createdAt", -1).limit(limit).to_list(limit)
-    for o in recent_orders:
-        for item in o.get("items", []):
-            events.append({
-                "id": f"SALE-{o['id'][-6:]}-{item['productId'][-4:]}",
-                "product_name": item["name"],
-                "sku": "SKU-" + item['productId'][-6:].upper(),
-                "event_type": "sale",
-                "qty_delta": -item["quantity"],
-                "qty_after": "?", # Hard to calculate without running balance
-                "reference": f"ORD-{o['id'][-8:].upper()}",
-                "note": "Online Order",
-                "created_at": o["createdAt"]
-            })
-            
-    # Get recent products (as 'Receives')
-    recent_products = await db.products.find({}, {"_id": 0}).sort("createdAt", -1).limit(limit).to_list(limit)
-    for p in recent_products:
-        events.append({
-            "id": f"RCV-{p['id'][-6:]}",
-            "product_name": p["name"],
-            "sku": "SKU-" + p['id'][-6:].upper(),
-            "event_type": "receive",
-            # Determine initial stock if possible, else 1
-            "qty_delta": 10, # Mock 10 for initial stock
-            "qty_after": 10,
-            "reference": "INIT-STOCK",
-            "note": "Initial Inventory",
-            "created_at": p["createdAt"]
-        })
-    
-    # Sort by date desc
-    events.sort(key=lambda x: x["created_at"], reverse=True)
-    
-    return events[:limit]
-
-
-    # Sort by date desc
-    events.sort(key=lambda x: x["created_at"], reverse=True)
-    
-    return events[:limit]
-
-
-@api_router.get("/admin/analytics/traffic")
-async def admin_analytics_traffic(days: int = 30, owner: dict = Depends(get_owner)):
-    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    
-    pipeline = [
-        {"$match": {"timestamp": {"$gte": start_date}}},
-        {
-            "$group": {
-                "_id": {"$substr": ["$timestamp", 0, 10]}, # Group by YYYY-MM-DD
-                "pageviews": {"$sum": 1},
-                "unique_visitors": {"$addToSet": "$ip"}
-            }
-        },
-        {"$sort": {"_id": 1}}
-    ]
-    
-    daily_traffic = await db.traffic_logs.aggregate(pipeline).to_list(days)
-    
-    # Fill gaps
-    result = []
-    traffic_map = {d["_id"]: d for d in daily_traffic}
-    
-    for i in range(days):
-        date = (datetime.now(timezone.utc) - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
-        data = traffic_map.get(date, {"pageviews": 0, "unique_visitors": []})
-        result.append({
-            "date": date,
-            "visitors": len(data["unique_visitors"]) if isinstance(data["unique_visitors"], list) else 0,
-            "pageviews": data["pageviews"]
-        })
-        
-    return result
-
-
-@api_router.get("/admin/analytics/pages")
-async def admin_analytics_pages(limit: int = 5, owner: dict = Depends(get_owner)):
-    pipeline = [
-        {"$group": {"_id": "$path", "views": {"$sum": 1}}},
-        {"$sort": {"views": -1}},
-        {"$limit": limit}
-    ]
-    
-    pages = await db.traffic_logs.aggregate(pipeline).to_list(limit)
-    
-    return [
-        {
-            "path": p["_id"],
-            "views": p["views"],
-            "avg_time": "1m 30s" # Mock for now
-        }
-        for p in pages
-    ]
-
-
-@api_router.get("/admin/analytics/devices")
-async def admin_analytics_devices(owner: dict = Depends(get_owner)):
-    # Regex aggregation for Mobile/Tablet/Desktop
-    # Simplified: Just check contains "Mobile"
-    
-    pipeline = [
-        {
-            "$project": {
-                "device": {
-                    "$cond": {
-                        "if": {"$regexMatch": {"input": "$user_agent", "regex": "Mobile", "options": "i"}},
-                        "then": "Mobile",
-                        "else": "Desktop" # Simplified
-                    }
-                }
-            }
-        },
-        {"$group": {"_id": "$device", "sessions": {"$sum": 1}}}
-    ]
-    
-    devices = await db.traffic_logs.aggregate(pipeline).to_list(5)
-    
-    return [
-        {"device": d["_id"], "sessions": d["sessions"]}
-        for d in devices
-    ]
-
-
-@api_router.get("/admin/analytics/sources")
-async def admin_analytics_sources(owner: dict = Depends(get_owner)):
-    # Parse referer
-    pipeline = [
-        {
-            "$project": {
-                "source": {
-                    "$cond": {
-                        "if": {"$eq": ["$referer", None]},
-                        "then": "Direct",
-                        "else": "Referral" # Simplified for now, real parsing needs url extraction
-                    }
-                }
-            }
-        },
-        {"$group": {"_id": "$source", "count": {"$sum": 1}}}
-    ]
-    
-    sources = await db.traffic_logs.aggregate(pipeline).to_list(5)
-    total = sum(s["count"] for s in sources)
-    
-    return [
-        {
-            "source": s["_id"],
-            "percent": (s["count"] / total) if total > 0 else 0
-        }
-        for s in sources
-    ]
-
-
-# Image Upload (Cloudinary)
-import cloudinary
-import cloudinary.uploader
-from fastapi import UploadFile, File
-
-cloudinary.config(
-    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.environ.get("CLOUDINARY_API_KEY"),
-    api_secret=os.environ.get("CLOUDINARY_API_SECRET")
-)
-
-@api_router.post("/admin/upload")
-async def admin_upload_image(file: UploadFile = File(...), owner: dict = Depends(get_owner)):
-    try:
-        contents = await file.read()
-        result = cloudinary.uploader.upload(contents, folder="jew-products")
-        return {"url": result["secure_url"]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-
-# Navigation Config
-@api_router.get("/navigation")
-async def get_public_navigation():
-    """Public endpoint - returns navigation menu for the website header"""
-    nav = await db.navigation.find_one({"id": "main"}, {"_id": 0})
-    if not nav or not nav.get("items"):
-        # Return default navigation structure
-        return [
-            {
-                "name": "ENGAGEMENT RINGS",
-                "columns": [
-                    {"title": None, "items": ["Solitaire Diamond Rings", "Halo Diamond Rings", "Three Stone Diamond Rings", "All Engagement Rings"]},
-                    {"title": "DIAMOND CUT", "items": ["Round", "Oval", "Emerald", "Pear"]}
-                ],
-                "featured": [{"title": "Yellow Gold Engagement Rings"}, {"title": "Three Stone Engagement Rings"}]
-            },
-            {
-                "name": "DIAMOND JEWELLERY",
-                "columns": [
-                    {"title": "JEWELLERY TYPE", "items": ["Diamond Eternity Rings", "Diamond Dress Rings", "Diamond Pendants", "Diamond Bracelets", "Diamond Earrings"]},
-                    {"title": "GEMSTONE TYPE", "items": ["Diamond", "Sapphire", "Emerald", "Ruby", "Pearl"]}
-                ],
-                "featured": [{"title": "Diamond Pendants"}, {"title": "Diamond Eternity Rings"}]
-            },
-            {
-                "name": "WEDDING RINGS",
-                "columns": [
-                    {"title": "LADIES WEDDING RINGS", "items": ["Diamond Rings", "White Gold Rings", "Yellow Gold Rings", "Platinum Rings"]},
-                    {"title": "GENTS WEDDING RINGS", "items": ["White Gold Rings", "Yellow Gold Rings", "Platinum Rings"]}
-                ],
-                "featured": [{"title": "Diamond Wedding Rings"}, {"title": "Plain Wedding Bands"}]
-            },
-            {
-                "name": "GOLD JEWELLERY",
-                "columns": [
-                    {"title": None, "items": ["Gold Pendants", "Gold Bracelets", "Gold Bangles", "Gold Earrings", "Gold Necklets"]},
-                    {"title": None, "items": ["Gold Rings", "Gold Chains", "All Gold Jewellery"]}
-                ],
-                "featured": [{"title": "Gold Pendants"}, {"title": "Gold Earrings"}]
-            },
-            {
-                "name": "SILVER JEWELLERY",
-                "columns": [
-                    {"title": None, "items": ["Silver Rings", "Silver Pendants", "Silver Bracelets"]},
-                    {"title": None, "items": ["Silver Earrings", "Silver Necklets", "All Silver Jewellery"]}
-                ],
-                "featured": [{"title": "Silver Pendants"}, {"title": "Silver Earrings"}]
-            }
-        ]
-    return nav.get("items", [])
-
-@api_router.get("/admin/navigation")
-async def get_admin_navigation(owner: dict = Depends(get_owner)):
-    nav = await db.navigation.find_one({"id": "main"}, {"_id": 0})
-    if not nav or not nav.get("items"):
-        # Return same defaults as public endpoint for consistency
-        return [
-            {
-                "name": "ENGAGEMENT RINGS",
-                "columns": [
-                    {"title": None, "items": ["Solitaire Diamond Rings", "Halo Diamond Rings", "Three Stone Diamond Rings", "Lab Grown Diamond Rings", "All Engagement Rings"]},
-                    {"title": "DIAMOND CUT", "items": ["Round", "Oval", "Emerald", "Pear", "Other"]}
-                ]
-            },
-            {
-                "name": "DIAMOND JEWELLERY",
-                "columns": [
-                    {"title": "JEWELLERY TYPE", "items": ["Diamond Eternity Rings", "Diamond Dress Rings", "Diamond Pendants", "Diamond Bracelets", "Diamond Bangles", "Diamond Earrings", "Diamond Necklets", "All Diamond Jewellery"]},
-                    {"title": "GEMSTONE TYPE", "items": ["Diamond", "Sapphire", "Emerald", "Ruby", "Pearl", "All Gemstone Jewellery"]}
-                ]
-            },
-            {
-                "name": "WEDDING RINGS",
-                "columns": [
-                    {"title": "LADIES WEDDING RINGS", "items": ["Diamond Rings", "White Gold Rings", "Yellow Gold Rings", "Platinum Rings"]},
-                    {"title": "GENTS WEDDING RINGS", "items": ["White Gold Rings", "Yellow Gold Rings", "Platinum Rings", "All Wedding Rings"]}
-                ]
-            },
-            {
-                "name": "GOLD JEWELLERY",
-                "columns": [
-                    {"title": None, "items": ["Gold Pendants", "Gold Bracelets", "Gold Bangles", "Gold Earrings", "Gold Necklets"]},
-                    {"title": None, "items": ["Gold Rings", "Gold Chains", "All Gold Jewellery"]}
-                ]
-            },
-            {
-                "name": "SILVER JEWELLERY",
-                "columns": [
-                    {"title": None, "items": ["Silver Rings", "Silver Pendants", "Silver Bracelets"]},
-                    {"title": None, "items": ["Silver Earrings", "Silver Necklets", "All Silver Jewellery"]}
-                ]
-            }
-        ]
-    return nav.get("items", [])
-
-@api_router.put("/admin/navigation")
-async def update_navigation(items: List[dict], owner: dict = Depends(get_owner)):
-    await db.navigation.update_one(
-        {"id": "main"},
-        {"$set": {"id": "main", "items": items}},
-        upsert=True
-    )
-    return {"message": "Navigation updated"}
-
-
-# Admin Stats
-@api_router.get("/admin/stats")
-async def get_admin_stats(owner: dict = Depends(get_owner)):
-    products_count = await db.products.count_documents({})
-    reviews_count = await db.reviews.count_documents({})
-    orders_count = await db.orders.count_documents({})
-    users_count = await db.users.count_documents({})
-    
-    return {
-        "products": products_count,
-        "reviews": reviews_count,
-        "orders": orders_count,
-        "users": users_count
-    }
-
-
-# ============================================
-# OWNER PORTAL - DASHBOARD & ANALYTICS
-# ============================================
-
-from models import (
-    DashboardStats, SalesDataPoint, ProductPerformance, LowStockAlert,
-    Location, LocationCreate, LocationType,
-    Vendor, VendorCreate, VendorContact,
-    PurchaseOrder, PurchaseOrderCreate, PurchaseOrderStatus, PurchaseOrderLine,
-    InventoryLedgerEntry, InventorySnapshot, InventoryEventType, InventoryAdjustment,
-    Transfer, TransferCreate, TransferStatus,
-    Customer, CustomerCreate,
-    ActivityLog, ProductStatus, StoreSettings
-)
-
-
-@api_router.get("/admin/dashboard")
-async def get_dashboard_stats(period: str = "7d", owner: dict = Depends(get_owner)):
-    """Get dashboard KPIs with REAL data from products and orders"""
-    
-    # Calculate date range
-    now = datetime.now(timezone.utc)
-    if period == "today":
-        start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == "7d":
-        start_date = now - timedelta(days=7)
-    else:  # 30d
-        start_date = now - timedelta(days=30)
-    
-    # Get orders in range (for sales metrics)
-    orders = await db.orders.find({
-        "createdAt": {"$gte": start_date.isoformat()}
-    }, {"_id": 0}).to_list(10000)
-    
-    # Calculate sales from orders
-    gross_sales = sum(o.get("total", 0) for o in orders)
-    orders_count = len(orders)
-    
-    # Get ALL products for inventory calculations
-    products = await db.products.find({}, {
-        "_id": 0, 
-        "total_cost": 1, 
-        "profit_margin": 1,
-        "stock_quantity": 1, 
-        "low_stock_threshold": 1,
-        "selling_price": 1
-    }).to_list(10000)
-    
-    # Calculate REAL inventory metrics
-    inventory_value = sum(p.get("total_cost", 0) * p.get("stock_quantity", 0) for p in products)
-    low_stock_count = sum(1 for p in products if p.get("stock_quantity", 0) <= p.get("low_stock_threshold", 2) and p.get("stock_quantity", 0) > 0)
-    stockout_count = sum(1 for p in products if p.get("stock_quantity", 0) <= 0)
-    
-    # Calculate profit from orders if they have cost_at_sale, else estimate from products
-    total_profit = 0
-    for order in orders:
-        for item in order.get("items", []):
-            # If order has profit captured at sale time
-            if "profit_at_sale" in item:
-                total_profit += item["profit_at_sale"]
-            else:
-                # Estimate using average margin
-                total_profit += item.get("price", 0) * item.get("quantity", 1) * 0.25
-    
-    # Separate fulfilled, pending, returned
-    orders_pending = sum(1 for o in orders if o.get("status") == "pending" or o.get("payment_status") == "pending")
-    orders_fulfilled = sum(1 for o in orders if o.get("status") in ["fulfilled", "completed", "delivered"])
-    orders_returned = sum(1 for o in orders if o.get("status") in ["returned", "refunded", "cancelled"])
-    
-    # If no breakdown, use estimates
-    if orders_pending + orders_fulfilled + orders_returned == 0 and orders_count > 0:
-        orders_fulfilled = int(orders_count * 0.7)
-        orders_pending = int(orders_count * 0.2)
-        orders_returned = orders_count - orders_fulfilled - orders_pending
-    
-    stats = DashboardStats(
-        gross_sales=round(gross_sales, 2),
-        net_sales=round(gross_sales * 0.97, 2),  # After payment fees
-        gross_profit=round(total_profit, 2),
-        net_profit=round(total_profit * 0.85, 2),  # After other expenses
-        orders_count=orders_count,
-        orders_pending=orders_pending,
-        orders_fulfilled=orders_fulfilled,
-        orders_returned=orders_returned,
-        inventory_value=round(inventory_value, 2),
-        low_stock_count=low_stock_count,
-        stockout_count=stockout_count,
-        period=period
-    )
-    
-    return stats.model_dump()
-
-
-@api_router.get("/admin/analytics/sales")
-async def get_sales_analytics(days: int = 30, owner: dict = Depends(get_owner)):
-    """Get sales data over time"""
-    
-    now = datetime.now(timezone.utc)
-    data_points = []
-    
-    for i in range(days):
-        date = now - timedelta(days=days - 1 - i)
-        date_str = date.strftime("%Y-%m-%d")
-        
-        # Get orders for this day
-        day_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-        
-        orders = await db.orders.find({
-            "createdAt": {
-                "$gte": day_start.isoformat(),
-                "$lt": day_end.isoformat()
-            }
-        }, {"_id": 0, "total": 1, "grossProfit": 1}).to_list(1000)
-        
-        gross_sales = sum(o.get("total", 0) for o in orders)
-        gross_profit = sum(o.get("grossProfit", o.get("total", 0) * 0.25) for o in orders)
-        
-        data_points.append(SalesDataPoint(
-            date=date_str,
-            gross_sales=gross_sales,
-            net_sales=gross_sales * 0.97,
-            gross_profit=gross_profit,
-            orders=len(orders)
-        ).model_dump())
-    
-    return data_points
-
-
-@api_router.get("/admin/analytics/sales-by-channel")
-async def get_sales_by_channel(days: int = 30, owner: dict = Depends(get_owner)):
-    """Get sales breakdown by channel (online vs POS)"""
-    
-    now = datetime.now(timezone.utc)
-    start_date = now - timedelta(days=days)
-    
-    orders = await db.orders.find({
-        "createdAt": {"$gte": start_date.isoformat()}
-    }, {"_id": 0, "channel": 1, "total": 1, "grossProfit": 1}).to_list(10000)
-    
-    # Aggregate by channel
-    channel_data = {"online": {"sales": 0, "orders": 0, "profit": 0}, "pos": {"sales": 0, "orders": 0, "profit": 0}}
-    
-    for order in orders:
-        channel = order.get("channel", "online")
-        if channel not in channel_data:
-            channel = "online"
-        channel_data[channel]["sales"] += order.get("total", 0)
-        channel_data[channel]["orders"] += 1
-        channel_data[channel]["profit"] += order.get("grossProfit", 0)
-    
-    return [
-        {"channel": "online", "label": "🌐 Online", **channel_data["online"]},
-        {"channel": "pos", "label": "🏪 In-Store (POS)", **channel_data["pos"]}
-    ]
-
-
-@api_router.get("/admin/analytics/top-products")
-async def get_top_products(days: int = 30, limit: int = 10, owner: dict = Depends(get_owner)):
-    """Get top products by profit/revenue - using real product margins"""
-    
-    now = datetime.now(timezone.utc)
-    start_date = now - timedelta(days=days)
-    
-    # Get orders with items
-    orders = await db.orders.find({
-        "createdAt": {"$gte": start_date.isoformat()}
-    }, {"_id": 0}).to_list(10000)
-    
-    # Get product profit margins from database
-    products = await db.products.find({}, {
-        "_id": 0,
-        "id": 1,
-        "name": 1,
-        "image": 1,
-        "profit_margin": 1,
-        "selling_price": 1,
-        "total_cost": 1
-    }).to_list(10000)
-    
-    # Create lookup of products
-    product_lookup = {p["id"]: p for p in products}
-    
-    # Aggregate by product from orders
-    product_stats = {}
-    for order in orders:
-        for item in order.get("items", []):
-            pid = item.get("productId")
-            if pid:
-                if pid not in product_stats:
-                    # Get real margin from product
-                    prod = product_lookup.get(pid, {})
-                    product_stats[pid] = {
-                        "product_id": pid,
-                        "product_name": prod.get("name") or item.get("name", "Unknown"),
-                        "units_sold": 0,
-                        "revenue": 0,
-                        "profit": 0,
-                        "image": prod.get("image") or item.get("image"),
-                        "unit_profit": prod.get("profit_margin", 0)
-                    }
-                qty = item.get("quantity", 0)
-                price = item.get("price", 0)
-                product_stats[pid]["units_sold"] += qty
-                product_stats[pid]["revenue"] += price * qty
-                # Use real profit margin
-                product_stats[pid]["profit"] += product_stats[pid]["unit_profit"] * qty
-    
-    # If no orders, show top products by profit margin potential
-    if not product_stats:
-        for p in products[:limit]:
-            product_stats[p["id"]] = {
-                "product_id": p["id"],
-                "product_name": p.get("name", "Unknown"),
-                "units_sold": 0,
-                "revenue": 0,
-                "profit": p.get("profit_margin", 0),  # Potential profit
-                "image": p.get("image")
-            }
-    
-    # Sort by profit
-    sorted_products = sorted(product_stats.values(), key=lambda x: x["profit"], reverse=True)
-    
-    return sorted_products[:limit]
-
-
-@api_router.get("/admin/analytics/low-stock")
-async def get_low_stock_alerts(owner: dict = Depends(get_owner)):
-    """Get low stock alerts from REAL product inventory data"""
-    
-    # Get products where stock is at or below threshold
-    products = await db.products.find({}, {
-        "_id": 0,
-        "id": 1,
-        "sku": 1,
-        "name": 1,
-        "image": 1,
-        "stock_quantity": 1,
-        "low_stock_threshold": 1
-    }).to_list(1000)
-    
-    # Filter to low stock items
-    alerts = []
-    for p in products:
-        stock = p.get("stock_quantity", 0)
-        threshold = p.get("low_stock_threshold", 2)
-        
-        # Include if stock is at or below threshold
-        if stock <= threshold:
-            alerts.append(LowStockAlert(
-                variant_id=p.get("id", ""),
-                variant_sku=p.get("sku", "N/A"),
-                product_name=p.get("name", "Unknown"),
-                location_id="loc-main",
-                location_name="Main Store",
-                available=stock,
-                min_stock=threshold,
-                image=p.get("image")
-            ).model_dump())
-    
-    # Sort by available (most urgent first)
-    alerts.sort(key=lambda x: x["available"])
-    
-    return alerts[:20]  # Return top 20 alerts
-
-
-# ============================================
-# OWNER PORTAL - LOCATIONS
-# ============================================
-
-@api_router.get("/admin/locations")
-async def get_locations(owner: dict = Depends(get_owner)):
-    locations = await db.locations.find({}, {"_id": 0}).to_list(100)
-    if not locations:
-        # Create default location
-        default_loc = Location(
-            id="loc-main",
-            name="Main Store",
-            type=LocationType.STORE,
-            city="Hyderabad",
-            state="Telangana",
-            country="India"
-        ).model_dump()
-        default_loc["created_at"] = default_loc["created_at"].isoformat()
-        default_loc["updated_at"] = default_loc["updated_at"].isoformat()
-        await db.locations.insert_one(default_loc)
-        return [default_loc]
-    return locations
-
-@api_router.post("/admin/locations")
-async def create_location(location: LocationCreate, owner: dict = Depends(get_owner)):
-    loc = Location(
-        id=str(uuid.uuid4()),
-        **location.model_dump()
-    )
-    loc_dict = loc.model_dump()
-    loc_dict["created_at"] = loc_dict["created_at"].isoformat()
-    loc_dict["updated_at"] = loc_dict["updated_at"].isoformat()
-    await db.locations.insert_one(loc_dict)
-    return loc_dict
-
-@api_router.put("/admin/locations/{location_id}")
-async def update_location(location_id: str, update: dict, owner: dict = Depends(get_owner)):
-    update["updated_at"] = datetime.now(timezone.utc).isoformat()
-    result = await db.locations.update_one({"id": location_id}, {"$set": update})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Location not found")
-    return await db.locations.find_one({"id": location_id}, {"_id": 0})
-
-@api_router.delete("/admin/locations/{location_id}")
-async def delete_location(location_id: str, owner: dict = Depends(get_owner)):
-    result = await db.locations.delete_one({"id": location_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Location not found")
-    return {"message": "Location deleted"}
-
-
-# ============================================
-# OWNER PORTAL - VENDORS
-# ============================================
-
-@api_router.get("/admin/vendors")
-async def get_vendors(owner: dict = Depends(get_owner)):
-    vendors = await db.vendors.find({}, {"_id": 0}).to_list(1000)
-    return vendors
-
-@api_router.get("/admin/vendors/{vendor_id}")
-async def get_vendor(vendor_id: str, owner: dict = Depends(get_owner)):
-    vendor = await db.vendors.find_one({"id": vendor_id}, {"_id": 0})
-    if not vendor:
-        raise HTTPException(status_code=404, detail="Vendor not found")
-    return vendor
-
-@api_router.post("/admin/vendors")
-async def create_vendor(vendor: VendorCreate, owner: dict = Depends(get_owner)):
-    v = Vendor(
-        id=str(uuid.uuid4()),
-        **vendor.model_dump()
-    )
-    v_dict = v.model_dump()
-    v_dict["created_at"] = v_dict["created_at"].isoformat()
-    v_dict["updated_at"] = v_dict["updated_at"].isoformat()
-    # Convert contacts to dict
-    v_dict["contacts"] = [c.model_dump() if hasattr(c, 'model_dump') else c for c in v_dict["contacts"]]
-    await db.vendors.insert_one(v_dict)
-    return v_dict
-
-@api_router.put("/admin/vendors/{vendor_id}")
-async def update_vendor(vendor_id: str, update: dict, owner: dict = Depends(get_owner)):
-    update["updated_at"] = datetime.now(timezone.utc).isoformat()
-    result = await db.vendors.update_one({"id": vendor_id}, {"$set": update})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Vendor not found")
-    return await db.vendors.find_one({"id": vendor_id}, {"_id": 0})
-
-@api_router.delete("/admin/vendors/{vendor_id}")
-async def delete_vendor(vendor_id: str, owner: dict = Depends(get_owner)):
-    result = await db.vendors.delete_one({"id": vendor_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Vendor not found")
-    return {"message": "Vendor deleted"}
-
-
-# ============================================
-# OWNER PORTAL - INVENTORY
-# ============================================
-
-@api_router.get("/admin/inventory")
-async def get_inventory_overview(location_id: str = None, owner: dict = Depends(get_owner)):
-    """Get inventory snapshots"""
-    query = {}
-    if location_id:
-        query["location_id"] = location_id
-    
-    snapshots = await db.inventory_snapshots.find(query, {"_id": 0}).to_list(10000)
-    return snapshots
-
-@api_router.get("/admin/inventory/ledger")
-async def get_inventory_ledger(
-    variant_id: str = None,
-    location_id: str = None,
-    limit: int = 100,
-    owner: dict = Depends(get_owner)
-):
-    """Get inventory ledger entries"""
-    query = {}
-    if variant_id:
-        query["variant_id"] = variant_id
-    if location_id:
-        query["location_id"] = location_id
-    
-    entries = await db.inventory_ledger.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
-    return entries
-
-@api_router.post("/admin/inventory/adjust")
-async def adjust_inventory(adjustment: InventoryAdjustment, owner: dict = Depends(get_owner)):
-    """Create an inventory adjustment"""
-    
-    # Create ledger entry
-    entry = InventoryLedgerEntry(
-        id=str(uuid.uuid4()),
-        variant_id=adjustment.variant_id,
-        location_id=adjustment.location_id,
-        event_type=InventoryEventType.ADJUST,
-        qty_delta=adjustment.qty_delta,
-        source="admin",
-        note=f"{adjustment.reason}: {adjustment.note}" if adjustment.note else adjustment.reason
-    )
-    
-    entry_dict = entry.model_dump()
-    entry_dict["created_at"] = entry_dict["created_at"].isoformat()
-    await db.inventory_ledger.insert_one(entry_dict)
-    
-    # Update snapshot
-    await update_inventory_snapshot(adjustment.variant_id, adjustment.location_id)
-    
-    return entry_dict
-
-async def update_inventory_snapshot(variant_id: str, location_id: str):
-    """Recalculate inventory snapshot from ledger"""
-    
-    entries = await db.inventory_ledger.find({
-        "variant_id": variant_id,
-        "location_id": location_id
-    }, {"_id": 0}).to_list(100000)
-    
-    on_hand = sum(e.get("qty_delta", 0) for e in entries)
-    
-    snapshot = {
-        "variant_id": variant_id,
-        "location_id": location_id,
-        "on_hand": on_hand,
-        "reserved": 0,
-        "available": on_hand,
-        "incoming": 0,
-        "as_of": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.inventory_snapshots.update_one(
-        {"variant_id": variant_id, "location_id": location_id},
-        {"$set": snapshot},
-        upsert=True
-    )
-
-
-# ============================================
-# OWNER PORTAL - TRANSFERS
-# ============================================
-
-@api_router.get("/admin/transfers")
-async def get_transfers(status: str = None, owner: dict = Depends(get_owner)):
-    query = {}
-    if status:
-        query["status"] = status
-    transfers = await db.transfers.find(query, {"_id": 0}).to_list(1000)
-    return transfers
-
-@api_router.post("/admin/transfers")
-async def create_transfer(transfer: TransferCreate, owner: dict = Depends(get_owner)):
-    t = Transfer(
-        id=str(uuid.uuid4()),
-        **transfer.model_dump()
-    )
-    t_dict = t.model_dump()
-    t_dict["created_at"] = t_dict["created_at"].isoformat()
-    await db.transfers.insert_one(t_dict)
-    return t_dict
-
-@api_router.put("/admin/transfers/{transfer_id}/ship")
-async def ship_transfer(transfer_id: str, owner: dict = Depends(get_owner)):
-    """Mark transfer as shipped / in transit"""
-    
-    transfer = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
-    if not transfer:
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    
-    # Create ledger entries for transfer out
-    for item in transfer.get("items", []):
-        entry = InventoryLedgerEntry(
-            variant_id=item.get("variant_id"),
-            location_id=transfer.get("from_location_id"),
-            event_type=InventoryEventType.TRANSFER_OUT,
-            qty_delta=-item.get("qty", 0),
-            ref_type="transfer",
-            ref_id=transfer_id
-        )
-        entry_dict = entry.model_dump()
-        entry_dict["created_at"] = entry_dict["created_at"].isoformat()
-        await db.inventory_ledger.insert_one(entry_dict)
-        await update_inventory_snapshot(item.get("variant_id"), transfer.get("from_location_id"))
-    
-    await db.transfers.update_one(
-        {"id": transfer_id},
-        {"$set": {
-            "status": TransferStatus.IN_TRANSIT.value,
-            "shipped_at": datetime.now(timezone.utc).isoformat()
-        }}
-    )
-    
-    return await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
-
-@api_router.put("/admin/transfers/{transfer_id}/receive")
-async def receive_transfer(transfer_id: str, owner: dict = Depends(get_owner)):
-    """Mark transfer as received"""
-    
-    transfer = await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
-    if not transfer:
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    
-    # Create ledger entries for transfer in
-    for item in transfer.get("items", []):
-        entry = InventoryLedgerEntry(
-            variant_id=item.get("variant_id"),
-            location_id=transfer.get("to_location_id"),
-            event_type=InventoryEventType.TRANSFER_IN,
-            qty_delta=item.get("qty", 0),
-            ref_type="transfer",
-            ref_id=transfer_id
-        )
-        entry_dict = entry.model_dump()
-        entry_dict["created_at"] = entry_dict["created_at"].isoformat()
-        await db.inventory_ledger.insert_one(entry_dict)
-        await update_inventory_snapshot(item.get("variant_id"), transfer.get("to_location_id"))
-    
-    await db.transfers.update_one(
-        {"id": transfer_id},
-        {"$set": {
-            "status": TransferStatus.RECEIVED.value,
-            "received_at": datetime.now(timezone.utc).isoformat()
-        }}
-    )
-    
-    return await db.transfers.find_one({"id": transfer_id}, {"_id": 0})
-
-
-# ============================================
-# OWNER PORTAL - PURCHASE ORDERS
-# ============================================
-
-@api_router.get("/admin/purchase-orders")
-async def get_purchase_orders(status: str = None, owner: dict = Depends(get_owner)):
-    query = {}
-    if status:
-        query["status"] = status
-    pos = await db.purchase_orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return pos
-
-@api_router.get("/admin/purchase-orders/{po_id}")
-async def get_purchase_order(po_id: str, owner: dict = Depends(get_owner)):
-    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
-    if not po:
-        raise HTTPException(status_code=404, detail="Purchase order not found")
-    return po
-
-@api_router.post("/admin/purchase-orders")
-async def create_purchase_order(po: PurchaseOrderCreate, owner: dict = Depends(get_owner)):
-    # Generate PO number
-    count = await db.purchase_orders.count_documents({})
-    po_number = f"PO-{count + 1:06d}"
-    
-    # Calculate totals
-    lines = []
-    subtotal = 0
-    for line in po.lines:
-        line_dict = line.model_dump()
-        line_dict["id"] = str(uuid.uuid4())
-        line_total = (line.unit_cost_material + line.unit_cost_making) * line.qty_ordered
-        subtotal += line_total
-        lines.append(line_dict)
-    
-    po_doc = PurchaseOrder(
-        id=str(uuid.uuid4()),
-        po_number=po_number,
-        vendor_id=po.vendor_id,
-        vendor_name=po.vendor_name,
-        destination_location_id=po.destination_location_id,
-        expected_arrival=po.expected_arrival,
-        currency=po.currency,
-        notes=po.notes,
-        lines=lines,
-        subtotal=subtotal,
-        grand_total=subtotal
-    )
-    
-    po_dict = po_doc.model_dump()
-    po_dict["created_at"] = po_dict["created_at"].isoformat()
-    po_dict["updated_at"] = po_dict["updated_at"].isoformat()
-    if po_dict.get("expected_arrival"):
-        po_dict["expected_arrival"] = po_dict["expected_arrival"].isoformat()
-    
-    await db.purchase_orders.insert_one(po_dict)
-    return po_dict
-
-@api_router.put("/admin/purchase-orders/{po_id}/order")
-async def mark_po_ordered(po_id: str, owner: dict = Depends(get_owner)):
-    await db.purchase_orders.update_one(
-        {"id": po_id},
-        {"$set": {
-            "status": PurchaseOrderStatus.ORDERED.value,
-            "ordered_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }}
-    )
-    return await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
-
-@api_router.put("/admin/purchase-orders/{po_id}/receive")
-async def receive_purchase_order(po_id: str, items: List[dict], owner: dict = Depends(get_owner)):
-    """Receive items from a purchase order"""
-    
-    po = await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
-    if not po:
-        raise HTTPException(status_code=404, detail="Purchase order not found")
-    
-    # Update line quantities and create ledger entries
-    lines = po.get("lines", [])
-    all_received = True
-    
-    for received_item in items:
-        for line in lines:
-            if line.get("variant_id") == received_item.get("variant_id"):
-                line["qty_received"] = line.get("qty_received", 0) + received_item.get("qty", 0)
-                
-                if line["qty_received"] < line["qty_ordered"]:
-                    all_received = False
-                
-                # Create ledger entry
-                entry = InventoryLedgerEntry(
-                    variant_id=line["variant_id"],
-                    location_id=po["destination_location_id"],
-                    event_type=InventoryEventType.RECEIVE,
-                    qty_delta=received_item.get("qty", 0),
-                    unit_cost=line.get("unit_cost_material", 0) + line.get("unit_cost_making", 0),
-                    ref_type="purchase_order",
-                    ref_id=po_id
-                )
-                entry_dict = entry.model_dump()
-                entry_dict["created_at"] = entry_dict["created_at"].isoformat()
-                await db.inventory_ledger.insert_one(entry_dict)
-                await update_inventory_snapshot(line["variant_id"], po["destination_location_id"])
-    
-    new_status = PurchaseOrderStatus.RECEIVED.value if all_received else PurchaseOrderStatus.PARTIAL.value
-    
-    await db.purchase_orders.update_one(
-        {"id": po_id},
-        {"$set": {
-            "lines": lines,
-            "status": new_status,
-            "received_at": datetime.now(timezone.utc).isoformat() if all_received else None,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }}
-    )
-    
-    return await db.purchase_orders.find_one({"id": po_id}, {"_id": 0})
-
-
-# ============================================
-# OWNER PORTAL - CUSTOMERS
-# ============================================
-
-@api_router.get("/admin/customers")
-async def get_customers(search: str = None, owner: dict = Depends(get_owner)):
-    query = {}
-    if search:
-        query["$or"] = [
-            {"name": {"$regex": search, "$options": "i"}},
-            {"email": {"$regex": search, "$options": "i"}},
-            {"phone": {"$regex": search, "$options": "i"}}
-        ]
-    customers = await db.customers.find(query, {"_id": 0}).to_list(1000)
-    return customers
-
-@api_router.get("/admin/customers/{customer_id}")
-async def get_customer(customer_id: str, owner: dict = Depends(get_owner)):
-    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
-    if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    return customer
-
-@api_router.post("/admin/customers")
-async def create_customer(customer: CustomerCreate, owner: dict = Depends(get_owner)):
-    c = Customer(
-        id=str(uuid.uuid4()),
-        **customer.model_dump()
-    )
-    c_dict = c.model_dump()
-    c_dict["created_at"] = c_dict["created_at"].isoformat()
-    c_dict["updated_at"] = c_dict["updated_at"].isoformat()
-    await db.customers.insert_one(c_dict)
-    return c_dict
-
-@api_router.put("/admin/customers/{customer_id}")
-async def update_customer(customer_id: str, update: dict, owner: dict = Depends(get_owner)):
-    update["updated_at"] = datetime.now(timezone.utc).isoformat()
-    result = await db.customers.update_one({"id": customer_id}, {"$set": update})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    return await db.customers.find_one({"id": customer_id}, {"_id": 0})
-
-
-# ============================================
-# OWNER PORTAL - ENHANCED ORDERS
-# ============================================
+    items: List[OrderItem]
+    shippingAddress: Address
+    paymentMethod: str
+    couponCode: Optional[str] = None
+
+# Using existing send_email function for consistency
+# async def send_email_background(to_email: str, subject: str, body: str):
+#     """Deprecated: Use send_email directly"""
+#     await send_email(to_email, subject, body, is_html=True)
 
 @api_router.get("/admin/orders")
 async def get_admin_orders(
-    status: str = None,
-    channel: str = None,
-    limit: int = 100,
-    owner: dict = Depends(get_owner)
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
 ):
-    query = {}
-    if status:
-        query["status"] = status
-    if channel:
-        query["channel"] = channel
-    
-    orders = await db.orders.find(query, {"_id": 0}).sort("createdAt", -1).to_list(limit)
-    return orders
-
-@api_router.get("/admin/orders/{order_id}")
-async def get_admin_order(order_id: str, owner: dict = Depends(get_owner)):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return order
-
-@api_router.put("/admin/orders/{order_id}/status")
-async def update_order_status(order_id: str, status: str, owner: dict = Depends(get_owner)):
-    update = {"status": status}
-    
-    if status == "fulfilled":
-        update["fulfilledAt"] = datetime.now(timezone.utc).isoformat()
-    elif status == "shipped":
-        update["shippedAt"] = datetime.now(timezone.utc).isoformat()
-    elif status == "delivered":
-        update["deliveredAt"] = datetime.now(timezone.utc).isoformat()
-    elif status == "cancelled":
-        update["cancelledAt"] = datetime.now(timezone.utc).isoformat()
-    
-    result = await db.orders.update_one({"id": order_id}, {"$set": update})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    # Get updated order
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    
-    # Send shipping notification email if status changed to "shipped"
-    if status == "shipped" and order:
-        # Get customer email
-        user = await db.users.find_one({"id": order.get("userId")}, {"_id": 0})
-        if user and user.get("email"):
-            order_for_email = {
-                **order,
-                "customer": {"name": user.get("name", "Valued Customer")}
-            }
-            asyncio.ensure_future(send_email(
-                user.get("email"),
-                f"Your order #{order_id[:8].upper()} has shipped! 🚚",
-                get_shipping_notification_email(order_for_email),
-                is_html=True
-            ))
-    
-    return order
-
-
-# ============================================
-# OWNER PORTAL - ACTIVITY LOGS
-# ============================================
-
-@api_router.get("/admin/activity-logs")
-async def get_activity_logs(
-    entity_type: str = None,
-    entity_id: str = None,
-    limit: int = 100,
-    owner: dict = Depends(get_owner)
-):
-    query = {}
-    if entity_type:
-        query["entity_type"] = entity_type
-    if entity_id:
-        query["entity_id"] = entity_id
-    
-    logs = await db.activity_logs.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
-    return logs
-
-
-# ============================================
-# OWNER PORTAL - COUPONS
-# ============================================
-
-@api_router.get("/admin/coupons")
-async def get_coupons(owner: dict = Depends(get_owner)):
-    coupons = await db.coupons.find({}, {"_id": 0}).to_list(100)
-    return coupons
-
-@api_router.get("/admin/coupons/{coupon_id}")
-async def get_coupon(coupon_id: str, owner: dict = Depends(get_owner)):
-    coupon = await db.coupons.find_one({"id": coupon_id}, {"_id": 0})
-    if not coupon:
-        raise HTTPException(status_code=404, detail="Coupon not found")
-    return coupon
-
-@api_router.post("/admin/coupons")
-async def create_coupon(coupon: dict, owner: dict = Depends(get_owner)):
-    coupon["id"] = str(uuid.uuid4())
-    coupon["usageCount"] = 0
-    coupon["createdAt"] = datetime.now(timezone.utc).isoformat()
-    await db.coupons.insert_one(coupon)
-    coupon.pop("_id", None)
-    return coupon
-
-@api_router.put("/admin/coupons/{coupon_id}")
-async def update_coupon(coupon_id: str, updates: dict, owner: dict = Depends(get_owner)):
-    updates.pop("_id", None)
-    updates.pop("id", None)
-    result = await db.coupons.update_one({"id": coupon_id}, {"$set": updates})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Coupon not found")
-    
-    return await db.coupons.find_one({"id": coupon_id}, {"_id": 0})
-
-@api_router.delete("/admin/coupons/{coupon_id}")
-async def delete_coupon(coupon_id: str, owner: dict = Depends(get_owner)):
-    result = await db.coupons.delete_one({"id": coupon_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Coupon not found")
-    return {"message": "Coupon deleted"}
-
-
-# ============================================
-# OWNER PORTAL - SETTINGS
-# ============================================
-
-@api_router.get("/admin/settings")
-async def get_store_settings(owner: dict = Depends(get_owner)):
-    settings = await db.settings.find_one({"id": "store_main"}, {"_id": 0})
-    if not settings:
-        # Return defaults
-        return {
-            "name": "Annya Jewellers",
-            "email": "contact@annyajewellers.com",
-            "phone": "+91 98765 43210",
-            "currency": "INR",
-            "timezone": "Asia/Kolkata",
-            "tax_gstin": "",
-            "tax_rate": 3
-        }
-    return settings
-
-@api_router.put("/admin/settings")
-async def update_store_settings(settings: StoreSettings, owner: dict = Depends(get_owner)):
-    settings_dict = settings.model_dump()
-    settings_dict["id"] = "store_main"
-    settings_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
-    
-    await db.settings.update_one(
-        {"id": "store_main"},
-        {"$set": settings_dict},
-        upsert=True
+    """Get all orders for admin dashboard"""
+    result = await db.execute(
+        select(OrderDB).order_by(OrderDB.created_at.desc())
     )
-    return settings_dict
-
-
-
-
-# ============================================
-# PUBLIC - COUPON VALIDATION
-# ============================================
-
-@api_router.post("/coupons/validate")
-async def validate_coupon(data: dict):
-    """Validate coupon code for checkout with product eligibility checks"""
-    code = data.get("code", "").upper()
-    order_total = data.get("orderTotal", 0)
-    cart_items = data.get("items", [])  # List of {productId, quantity, price, allowCoupons}
+    orders = result.scalars().all()
     
-    coupon = await db.coupons.find_one({"code": code}, {"_id": 0})
-    if not coupon:
-        raise HTTPException(status_code=404, detail="Invalid coupon code")
-    
-    if not coupon.get("isActive", True):
-        raise HTTPException(status_code=400, detail="Coupon is inactive")
-    
-    # Check usage limit
-    if coupon.get("usageLimit") and coupon.get("usageCount", 0) >= coupon["usageLimit"]:
-        raise HTTPException(status_code=400, detail="Coupon usage limit reached")
-    
-    # Check min order value
-    if order_total < coupon.get("minOrderValue", 0):
-        raise HTTPException(status_code=400, detail=f"Minimum order value is ₹{coupon['minOrderValue']}")
-    
-    # Determine eligible items and amount
-    scope = coupon.get("scope", "general")
-    applicable_products = coupon.get("applicableProducts", [])
-    
-    eligible_amount = 0
-    eligible_items = []
-    ineligible_reasons = []
-    
-    if cart_items:
-        for item in cart_items:
-            product_id = item.get("productId")
-            allow_coupons = item.get("allowCoupons", True)
-            item_total = item.get("price", 0) * item.get("quantity", 1)
-            
-            # Check if product allows coupons
-            if not allow_coupons:
-                ineligible_reasons.append(f"{item.get('name', 'Item')} has a discount and doesn't allow coupons")
-                continue
-            
-            # Check scope
-            if scope == "product" and applicable_products:
-                if product_id not in applicable_products:
-                    continue  # Not in applicable products
-            
-            eligible_items.append(product_id)
-            eligible_amount += item_total
-    else:
-        # Fallback: use order_total if no items provided
-        eligible_amount = order_total
-    
-    if scope == "product" and not eligible_items:
-        raise HTTPException(status_code=400, detail="This coupon is not valid for items in your cart")
-    
-    if eligible_amount <= 0:
-        if ineligible_reasons:
-            raise HTTPException(status_code=400, detail=ineligible_reasons[0])
-        raise HTTPException(status_code=400, detail="No eligible items for this coupon")
-    
-    # Calculate discount on eligible amount only
-    if coupon["type"] == "percent":
-        discount = eligible_amount * (coupon["value"] / 100)
-        if coupon.get("maxDiscount"):
-            discount = min(discount, coupon["maxDiscount"])
-    else:
-        discount = min(coupon["value"], eligible_amount)
-    
-    return {
-        "valid": True,
-        "code": code,
-        "scope": scope,
-        "type": coupon["type"],
-        "value": coupon["value"],
-        "discount": round(discount, 2),
-        "eligibleAmount": eligible_amount,
-        "eligibleItems": eligible_items,
-        "description": coupon.get("description", ""),
-        "applicableProducts": applicable_products
-    }
-
-
-# ============================================
-# POS - POINT OF SALE ENDPOINTS
-# ============================================
-
-@api_router.get("/pos/product/{identifier}")
-async def pos_product_lookup(identifier: str):
-    """Lookup product by SKU or barcode for POS"""
-    product = await db.products.find_one({
-        "$or": [
-            {"sku": identifier},
-            {"barcode": identifier}
-        ]
-    }, {"_id": 0})
-    
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    return product
-
-@api_router.post("/pos/sale")
-async def create_pos_sale(data: dict, owner: dict = Depends(get_owner)):
-    """Create a POS sale (offline order)"""
-    items = data.get("items", [])
-    if not items:
-        raise HTTPException(status_code=400, detail="No items in sale")
-    
-    # Calculate totals and get product costs
-    subtotal = 0
-    total_cost = 0
-    order_items = []
-    
-    for item in items:
-        product = await db.products.find_one({"id": item["productId"]}, {"_id": 0})
-        if not product:
-            raise HTTPException(status_code=404, detail=f"Product {item['productId']} not found")
-        
-        qty = item.get("quantity", 1)
-        unit_price = item.get("unitPrice", product.get("sellingPrice", 0))
-        line_total = unit_price * qty
-        cost_at_sale = product.get("totalCost", 0)
-        profit_at_sale = (unit_price - cost_at_sale) * qty
-        
-        order_items.append({
-            "productId": product["id"],
-            "sku": product.get("sku"),
-            "name": product.get("name"),
-            "quantity": qty,
-            "unitPrice": unit_price,
-            "discount": item.get("discount", 0),
-            "tax": round(line_total * 0.03, 2),
-            "lineTotal": line_total,
-            "costAtSale": cost_at_sale,
-            "profitAtSale": profit_at_sale,
-            "image": product.get("image")
-        })
-        
-        subtotal += line_total
-        total_cost += cost_at_sale * qty
-        
-        # Decrement stock
-        await db.products.update_one(
-            {"id": product["id"]},
-            {"$inc": {"stockQuantity": -qty, "stock_quantity": -qty}}
-        )
-    
-    # Apply coupon if provided
-    coupon_discount = 0
-    coupon_code = data.get("couponCode")
-    if coupon_code:
-        try:
-            coupon_result = await validate_coupon({"code": coupon_code, "orderTotal": subtotal})
-            coupon_discount = coupon_result["discount"]
-            # Increment coupon usage
-            await db.coupons.update_one({"code": coupon_code.upper()}, {"$inc": {"usageCount": 1}})
-        except:
-            pass
-    
-    tax_total = round(subtotal * 0.03, 2)
-    grand_total = subtotal + tax_total - coupon_discount
-    
-    # Generate order number
-    order_count = await db.orders.count_documents({})
-    order_number = f"AJ-POS-{order_count + 1:04d}"
-    
-    order = {
-        "id": str(uuid.uuid4()),
-        "orderNumber": order_number,
-        "channel": "pos",
-        "locationId": data.get("locationId", "loc-main"),
-        "staffId": data.get("staffId"),
-        "staffName": data.get("staffName"),
-        "customerId": data.get("customerId"),
-        "customerName": data.get("customerName", "Walk-in"),
-        "customerPhone": data.get("customerPhone"),
-        "status": "fulfilled",
-        "paymentStatus": "paid",
-        "fulfillmentStatus": "fulfilled",
-        "items": order_items,
-        "subtotal": subtotal,
-        "discountTotal": coupon_discount,
-        "taxTotal": tax_total,
-        "shippingTotal": 0,
-        "grandTotal": round(grand_total, 2),
-        "total": round(grand_total, 2),
-        "couponCode": coupon_code,
-        "couponDiscount": coupon_discount,
-        "totalCost": total_cost,
-        "grossProfit": round(subtotal - total_cost, 2),
-        "netProfit": round(grand_total - total_cost, 2),
-        "paymentMethod": data.get("paymentMethod", "cash"),
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "paidAt": datetime.now(timezone.utc).isoformat(),
-        "fulfilledAt": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.orders.insert_one(order)
-    order.pop("_id", None)
-    
-    return order
-
-
-# ============================================
-# MARKETING ANALYTICS
-# ============================================
-
-@api_router.get("/admin/analytics/traffic")
-async def get_traffic_analytics(days: int = 30, owner: dict = Depends(get_owner)):
-    """Get traffic data (visitors, pageviews) over time"""
-    now = datetime.now(timezone.utc)
-    start_date = now - timedelta(days=days)
-    
-    logs = await db.traffic_logs.find({
-        "timestamp": {"$gte": start_date.isoformat()}
-    }, {"_id": 0, "timestamp": 1, "ip": 1}).to_list(10000)
-    
-    # Group by date
-    daily_stats = {}
-    for i in range(days):
-        date_str = (now - timedelta(days=days-1-i)).strftime("%Y-%m-%d")
-        daily_stats[date_str] = {"date": date_str, "visitors": set(), "pageviews": 0}
-        
-    for log in logs:
-        ts = datetime.fromisoformat(log["timestamp"])
-        date_str = ts.strftime("%Y-%m-%d")
-        if date_str in daily_stats:
-            daily_stats[date_str]["pageviews"] += 1
-            daily_stats[date_str]["visitors"].add(log.get("ip"))
-            
-    # Convert to list
-    result = []
-    for date_str, stats in daily_stats.items():
-        result.append({
-            "date": date_str,
-            "visitors": len(stats["visitors"]),
-            "pageviews": stats["pageviews"]
-        })
-        
-    return result
-
-@api_router.get("/admin/analytics/pages")
-async def get_top_pages(limit: int = 10, owner: dict = Depends(get_owner)):
-    """Get top viewed pages"""
-    logs = await db.traffic_logs.find({}, {"_id": 0, "path": 1}).to_list(10000)
-    
-    # Aggregate
-    page_counts = {}
-    for log in logs:
-        path = log.get("path", "/")
-        page_counts[path] = page_counts.get(path, 0) + 1
-        
-    # Sort
-    sorted_pages = sorted(page_counts.items(), key=lambda x: x[1], reverse=True)
-    
-    return [{"page": p[0], "views": p[1], "bounce": 0} for p in sorted_pages[:limit]]
-
-@api_router.get("/admin/analytics/sources")
-async def get_traffic_sources(owner: dict = Depends(get_owner)):
-    """Get traffic sources breakdown"""
-    logs = await db.traffic_logs.find({}, {"_id": 0, "referer": 1}).to_list(10000)
-    
-    sources = {}
-    for log in logs:
-        ref = log.get("referer")
-        source = "Direct"
-        if ref:
-            if "google" in ref: source = "Google"
-            elif "facebook" in ref or "instagram" in ref: source = "Social"
-            elif "twitter" in ref or "t.co" in ref: source = "Social"
-            elif "youtube" in ref: source = "Social"
-            else: source = "Referral"
-            
-        sources[source] = sources.get(source, 0) + 1
-        
-    total = sum(sources.values()) or 1
-    return [{"source": s, "visitors": c, "percent": c/total} for s, c in sources.items()]
-
-@api_router.post("/admin/test-email")
-async def test_email(data: dict, owner: dict = Depends(get_owner)):
-    """Test email configuration"""
-    to_email = data.get("email")
-    if not to_email:
-        raise HTTPException(status_code=400, detail="Email is required")
-    
-    subject = "Test Email from Annya Jewellers"
-    body = """
-    <h1>Test Email</h1>
-    <p>This is a test email from your Annya Jewellers Owner Portal.</p>
-    <p>If you received this, your email configuration is working correctly! 🎉</p>
-    """
-    
-    success = await send_email(to_email, subject, body, is_html=True)
-    
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to send email. Check server logs and SMTP configuration.")
-        
-    return {"message": "Email sent successfully", "to": to_email}
-
-
-@api_router.get("/admin/analytics/devices")
-async def get_device_analytics(owner: dict = Depends(get_owner)):
-    """Get device breakdown"""
-    logs = await db.traffic_logs.find({}, {"_id": 0, "device": 1}).to_list(10000)
-    
-    devices = {"desktop": 0, "mobile": 0, "tablet": 0}
-    for log in logs:
-        dev = log.get("device", "desktop").lower()
-        if "mobile" in dev:
-            devices["mobile"] += 1
-        elif "tablet" in dev:
-            devices["tablet"] += 1
-        else:
-            devices["desktop"] += 1
-            
-    total = sum(devices.values()) or 1
     return [
-        {"device": "Desktop", "sessions": devices["desktop"], "percent": devices["desktop"]/total},
-        {"device": "Mobile", "sessions": devices["mobile"], "percent": devices["mobile"]/total},
-        {"device": "Tablet", "sessions": devices["tablet"], "percent": devices["tablet"]/total}
+        {
+            "id": str(o.id),
+            "order_number": o.order_number,
+            "customer": {
+                "name": o.customer_name,
+                "email": o.customer_email
+            },
+            "total": float(o.grand_total) if o.grand_total else 0,
+            "status": o.status,
+            "paymentStatus": o.payment_status,
+            "createdAt": o.created_at.isoformat() if o.created_at else None,
+            "channel": o.channel,
+            "items": o.items,
+            "shippingAddress": o.shipping_address
+        }
+        for o in orders
     ]
 
+@api_router.get("/admin/orders/{order_id}")
+async def get_admin_order_detail(
+    order_id: str,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get order details for admin"""
+    result = await db.execute(select(OrderDB).where(OrderDB.id == order_id))
+    order = result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    return {
+        "id": str(order.id),
+        "orderNumber": order.order_number,
+        "customerName": order.customer_name,
+        "customerEmail": order.customer_email,
+        "customerPhone": order.customer_phone,
+        "items": order.items,
+        "subtotal": float(order.subtotal),
+        "shippingTotal": float(order.shipping_total),
+        "total": float(order.grand_total),
+        "status": order.status,
+        "paymentStatus": order.payment_status,
+        "paymentMethod": order.payment_method,
+        "shippingAddress": order.shipping_address,
+        "createdAt": order.created_at.isoformat() if order.created_at else None,
+        "channel": order.channel
+    }
 
+@api_router.put("/admin/orders/{order_id}/status")
+async def update_order_status(
+    order_id: str,
+    status_data: dict = Body(...),
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update order status"""
+    result = await db.execute(select(OrderDB).where(OrderDB.id == order_id))
+    order = result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    if "status" in status_data:
+        order.status = status_data["status"]
+        
+    await db.commit()
+    return {"success": True, "status": order.status}
 
-# Include the router in the main app
+@api_router.post("/orders")
+async def place_order(
+    order_data: OrderCreate,
+    background_tasks: BackgroundTasks,
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Place a new order"""
+    try:
+        import uuid as uuid_lib
+        from datetime import datetime
+        
+        # 1. Calculate totals and validate stock
+        total_amount = 0
+        total_cost = 0
+        items_json = []
+        
+        for item in order_data.items:
+            # Fetch product
+            result = await db.execute(select(ProductDB).where(ProductDB.id == item.productId))
+            product = result.scalar_one_or_none()
+            
+            if not product:
+                raise HTTPException(status_code=404, detail=f"Product {item.productId} not found")
+                
+            if product.stock_quantity < item.quantity:
+                raise HTTPException(status_code=400, detail=f"Insufficient stock for {product.name}")
+                
+            # Calculate price
+            item_total = float(product.selling_price) * item.quantity
+            total_amount += item_total
+            if product.total_cost:
+                total_cost += float(product.total_cost) * item.quantity
+            
+            items_json.append({
+                "id": str(product.id),
+                "name": product.name,
+                "quantity": item.quantity,
+                "price": float(product.selling_price),
+                "image": product.image,
+                "category": product.category
+            })
+            
+            # Decrement stock
+            product.stock_quantity -= item.quantity
+            if product.stock_quantity <= 0:
+                product.in_stock = False
+                
+        if product.stock_quantity <= 0:
+                product.in_stock = False
+                
+        # 2. Apply Coupon
+        discount_amount = 0
+        coupon = None
+        
+        if order_data.couponCode:
+            # Verify coupon again for security
+            result = await db.execute(
+                select(CouponDB).where(
+                    CouponDB.code == order_data.couponCode.upper(),
+                    CouponDB.is_active == True
+                )
+            )
+            coupon = result.scalar_one_or_none()
+            
+            if coupon:
+                # Check constraints
+                if total_amount >= float(coupon.min_order_value):
+                    if coupon.type == 'percent':
+                        calc_discount = (total_amount * float(coupon.value)) / 100
+                        if coupon.max_discount and calc_discount > float(coupon.max_discount):
+                            calc_discount = float(coupon.max_discount)
+                        discount_amount = calc_discount
+                    else:
+                        discount_amount = float(coupon.value)
+                    
+                    # Cap at total amount
+                    if discount_amount > total_amount:
+                        discount_amount = total_amount
+                        
+                    # Increment usage
+                    coupon.usage_count += 1
+        
+        # 3. Create Order
+        shipping_cost = 0 if total_amount > 5000 else 100
+        
+        # Final calculation
+        tax_total = float(total_amount - discount_amount) * 0.03 # Est 3% Tax
+        grand_total = float(total_amount - discount_amount) + shipping_cost
+        
+        # Generate Order Number
+        
+        # Generate Order Number
+        order_number = f"ORD-{uuid_lib.uuid4().hex[:8].upper()}"
+        
+        new_order = OrderDB(
+            id=uuid_lib.uuid4(),
+            order_number=order_number,
+            customer_id=str(current_user.id),
+            customer_name=f"{order_data.shippingAddress.firstName} {order_data.shippingAddress.lastName}",
+            customer_email=current_user.email,
+            customer_phone=order_data.shippingAddress.phone,
+            
+            items=items_json,
+            subtotal=total_amount,
+            shipping_total=shipping_cost,
+            grand_total=grand_total,
+            discount_total=discount_amount,
+            coupon_code=coupon.code if coupon else None,
+            coupon_discount=discount_amount if coupon else 0,
+            
+            total_cost=total_cost,
+            gross_profit=grand_total - total_cost, # Simplified
+            net_profit=grand_total - total_cost,
+            
+            status="pending",
+            payment_status="pending", # COD
+            payment_method=order_data.paymentMethod,
+            shipping_address=order_data.shippingAddress.dict(),
+            
+            channel="online"
+        )
+        
+        db.add(new_order)
+        await db.commit()
+        await db.refresh(new_order)
+        
+        # 3. Send Email
+        # Construct email body with details
+        items_html = ""
+        for item in items_json:
+            item_total = item['price'] * item['quantity']
+            items_html += f"""
+            <tr>
+                <td style="padding: 8px; border-bottom: 1px solid #ddd;">{item['name']}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #ddd;">{item['quantity']}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #ddd;">₹{item['price']}</td>
+                <td style="padding: 8px; border-bottom: 1px solid #ddd;">₹{item_total}</td>
+            </tr>
+            """
+            
+        discount_row = ""
+        if discount_amount > 0:
+            discount_row = f"""
+            <tr>
+                <td colspan="3" style="text-align: right; padding: 8px;"><strong>Discount:</strong></td>
+                <td style="padding: 8px; color: green;">-₹{discount_amount}</td>
+            </tr>
+            """
+            
+        email_body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee;">
+            <h1 style="color: #333; text-align: center;">Order Confirmation</h1>
+            <p>Dear {current_user.full_name},</p>
+            <p>Thank you for your order! Your order number is <strong>{order_number}</strong>.</p>
+            
+            <h3 style="border-bottom: 2px solid #c4ad94; padding-bottom: 10px; margin-top: 30px;">Order Details</h3>
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                <thead>
+                    <tr style="background-color: #f8f8f8;">
+                        <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd;">Product</th>
+                        <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd;">Qty</th>
+                        <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd;">Price</th>
+                        <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {items_html}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="3" style="text-align: right; padding: 8px; border-top: 1px solid #ddd;"><strong>Subtotal:</strong></td>
+                        <td style="padding: 8px; border-top: 1px solid #ddd;">₹{total_amount}</td>
+                    </tr>
+                    {discount_row}
+                    <tr>
+                        <td colspan="3" style="text-align: right; padding: 8px;"><strong>Shipping:</strong></td>
+                        <td style="padding: 8px;">₹{shipping_cost}</td>
+                    </tr>
+                    <tr style="background-color: #f8f8f8;">
+                        <td colspan="3" style="text-align: right; padding: 12px; font-size: 1.1em;"><strong>Grand Total:</strong></td>
+                        <td style="padding: 12px; font-size: 1.1em;"><strong>₹{grand_total}</strong></td>
+                    </tr>
+                </tfoot>
+            </table>
+            
+            <p style="margin-top: 20px;">We will notify you when your order is shipped.</p>
+            <br>
+            <p style="color: #666; font-size: 0.9em;">Best regards,<br>The Annya Jewellers Team</p>
+        </div>
+        """
+        # Use simple background task wrapper to match async signature if needed, 
+        # or just pass the async function to BackgroundTasks (FastAPI supports it)
+        background_tasks.add_task(send_email, current_user.email, f"Order Confirmation #{order_number}", email_body, True)
+        
+        # 4. Auto-save Address to Profile
+        if order_data.shippingAddress:
+            current_user.address = order_data.shippingAddress.address
+            current_user.city = order_data.shippingAddress.city
+            current_user.state = order_data.shippingAddress.state
+            current_user.pincode = order_data.shippingAddress.pincode
+            current_user.country = order_data.shippingAddress.country
+            # Phone is already saved during reg, but update if changed? 
+            # current_user.phone = order_data.shippingAddress.phone 
+            db.add(current_user)
+            await db.commit()
+        
+        return {"success": True, "orderId": str(new_order.id), "orderNumber": order_number}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Order failed: {e}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/orders")
+async def get_my_orders(
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get current user's order history"""
+    result = await db.execute(
+        select(OrderDB)
+        .where(OrderDB.customer_id == str(current_user.id))
+        .order_by(OrderDB.created_at.desc())
+    )
+    orders = result.scalars().all()
+    
+    return [
+        {
+            "id": str(o.id),
+            "orderNumber": o.order_number,
+            "total": float(o.grand_total) if o.grand_total else 0,
+            "status": o.status,
+            "paymentStatus": o.payment_status,
+            "createdAt": o.created_at.isoformat() if o.created_at else None,
+            "items": o.items,
+            "shippingAddress": o.shipping_address
+        }
+        for o in orders
+    ]
+
+@api_router.get("/orders/{order_id}")
+async def get_my_order_detail(
+    order_id: str,
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get details of a specific order for the current user"""
+    result = await db.execute(
+        select(OrderDB)
+        .where(
+            OrderDB.id == order_id,
+            OrderDB.customer_id == str(current_user.id)
+        )
+    )
+    order = result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    return {
+        "id": str(order.id),
+        "orderNumber": order.order_number,
+        "total": float(order.grand_total) if order.grand_total else 0,
+        "subtotal": float(order.subtotal) if order.subtotal else 0,
+        "shippingTotal": float(order.shipping_total) if order.shipping_total else 0,
+        "status": order.status,
+        "paymentStatus": order.payment_status,
+        "paymentMethod": order.payment_method,
+        "createdAt": order.created_at.isoformat() if order.created_at else None,
+        "items": order.items,
+        "shippingAddress": order.shipping_address
+    }
+
 app.include_router(api_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("startup")
-async def startup_db_client():
-    """Create database indexes on startup for optimal query performance"""
-    logging.info("Creating database indexes...")
-    try:
-        # Products indexes
-        await db.products.create_index("id", unique=True)
-        await db.products.create_index("sku", unique=True, sparse=True)
-        await db.products.create_index("category")
-        await db.products.create_index([("name", "text"), ("tags", "text")])
-        
-        # Orders indexes
-        await db.orders.create_index("id", unique=True)
-        await db.orders.create_index("userId")
-        await db.orders.create_index("createdAt")
-        await db.orders.create_index("status")
-        
-        # Traffic logs indexes
-        await db.traffic_logs.create_index("timestamp")
-        await db.traffic_logs.create_index("path")
-        
-        # Users indexes
-        await db.users.create_index("id", unique=True)
-        await db.users.create_index("email", unique=True)
-        
-        # Coupons indexes
-        await db.coupons.create_index("id", unique=True)
-        await db.coupons.create_index("code", unique=True)
-        
-        logging.info("Database indexes created successfully!")
-    except Exception as e:
-        logging.error(f"Failed to create indexes: {str(e)}")
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

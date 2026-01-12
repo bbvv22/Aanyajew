@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from './ui/button';
 
 const GiftSection = () => {
@@ -26,9 +27,11 @@ const GiftSection = () => {
               Find inspiration and make every occasion memorable with the unparalleled craftsmanship
               and enduring beauty of Annya's curated selection of fine jewellery.
             </p>
-            <Button className="bg-[#c4ad94] hover:bg-[#b39d84] text-white px-8">
-              DISCOVER
-            </Button>
+            <Link to="/products">
+              <Button className="bg-[#c4ad94] hover:bg-[#b39d84] text-white px-8">
+                DISCOVER
+              </Button>
+            </Link>
           </div>
         </div>
       </div>

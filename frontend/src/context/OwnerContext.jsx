@@ -44,7 +44,7 @@ export const OwnerProvider = ({ children }) => {
     const login = async (username, password) => {
         try {
             const response = await axios.post(`${backendUrl}/api/owner/login`, {
-                username,
+                email: username,  // Backend expects 'email' field
                 password
             });
 
@@ -52,9 +52,21 @@ export const OwnerProvider = ({ children }) => {
             setIsOwner(true);
             return { success: true };
         } catch (error) {
+            console.error('Login error:', error.response?.data);
+            // Handle validation errors (arrays) or string errors
+            let errorMessage = 'Login failed';
+            if (error.response?.data?.detail) {
+                const detail = error.response.data.detail;
+                if (Array.isArray(detail) && detail.length > 0) {
+                    // Validation error array
+                    errorMessage = detail.map(err => err.msg).join(', ');
+                } else if (typeof detail === 'string') {
+                    errorMessage = detail;
+                }
+            }
             return {
                 success: false,
-                error: error.response?.data?.detail || 'Login failed'
+                error: errorMessage
             };
         }
     };

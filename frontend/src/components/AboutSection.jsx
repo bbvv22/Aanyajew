@@ -17,9 +17,7 @@ const AboutSection = () => {
         <p className="text-gray-600 mb-8 leading-relaxed">
           We take pride in curating a collection that showcases some of the most splendid diamonds, gold, and silver jewellery.
         </p>
-        <Button className="bg-[#c4ad94] hover:bg-[#b39d84] text-white px-8">
-          READ MORE
-        </Button>
+
       </div>
     </section>
   );

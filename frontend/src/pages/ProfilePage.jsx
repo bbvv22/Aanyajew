@@ -125,13 +125,19 @@ const ProfilePage = () => {
 
     const handleSave = async () => {
         try {
-            const updatedUser = { ...user, ...formData };
+            const token = localStorage.getItem("token");
+            const response = await axios.put(`${backendUrl}/api/auth/profile`, formData, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+
+            const updatedUser = response.data;
             localStorage.setItem("user", JSON.stringify(updatedUser));
             setUser(updatedUser);
             setEditing(false);
             success("Profile updated successfully!");
         } catch (err) {
-            showError("Failed to update profile");
+            console.error("Update profile error:", err);
+            showError(err.response?.data?.detail || "Failed to update profile");
         }
     };
 
@@ -368,57 +374,113 @@ const ProfilePage = () => {
                 {/* Profile Tab */}
                 {activeTab === "profile" && (
                     <div className="space-y-6">
-                        <div className="bg-white rounded-lg shadow-sm p-6">
-                            <div className="flex items-center justify-between mb-6">
-                                <h2 className="text-xl font-semibold text-gray-800">Profile Details</h2>
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
+                                <div>
+                                    <h2 className="text-lg font-semibold text-gray-900">Personal Information</h2>
+                                    <p className="text-sm text-gray-500">Manage your personal details</p>
+                                </div>
                                 {!editing ? (
-                                    <Button variant="outline" onClick={() => setEditing(true)}>
-                                        Edit Profile
+                                    <Button onClick={() => setEditing(true)} className="bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 hover:text-gray-900 shadow-sm">
+                                        <Edit2 className="h-4 w-4 mr-2" />
+                                        Edit Details
                                     </Button>
                                 ) : (
                                     <div className="flex gap-2">
-                                        <Button onClick={handleSave} className="bg-[#c4ad94] hover:bg-[#b39d84] text-white">
-                                            Save
-                                        </Button>
-                                        <Button variant="outline" onClick={() => setEditing(false)}>
+                                        <Button variant="outline" onClick={() => setEditing(false)} className="bg-white text-gray-600 border-gray-200">
                                             Cancel
+                                        </Button>
+                                        <Button onClick={handleSave} className="bg-[#c4ad94] hover:bg-[#b39d84] text-white shadow-sm">
+                                            Save Changes
                                         </Button>
                                     </div>
                                 )}
                             </div>
 
-                            <div className="space-y-4">
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                                        <User className="h-4 w-4 inline mr-2" />Full Name
-                                    </label>
-                                    {editing ? (
-                                        <Input name="name" value={formData.name} onChange={handleChange} />
-                                    ) : (
-                                        <p className="text-gray-800 py-2">{user?.name || "Not set"}</p>
-                                    )}
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                                        <Mail className="h-4 w-4 inline mr-2" />Email Address
-                                    </label>
-                                    <p className="text-gray-800 py-2">{user?.email}</p>
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                                        <Phone className="h-4 w-4 inline mr-2" />Phone Number
-                                    </label>
-                                    {editing ? (
-                                        <Input name="phone" value={formData.phone} onChange={handleChange} placeholder="Enter phone number" />
-                                    ) : (
-                                        <p className="text-gray-800 py-2">{user?.phone || "Not set"}</p>
-                                    )}
+                            <div className="p-6 md:p-8">
+                                <div className="grid md:grid-cols-2 gap-8">
+                                    {/* Full Name */}
+                                    <div className="group">
+                                        <label className="flex items-center text-sm font-medium text-gray-500 mb-2">
+                                            <User className="h-4 w-4 mr-2 text-[#c4ad94]" />
+                                            Full Name
+                                        </label>
+                                        {editing ? (
+                                            <Input
+                                                name="name"
+                                                value={formData.name}
+                                                onChange={handleChange}
+                                                className="max-w-md bg-gray-50 border-gray-200 focus:bg-white transition-colors"
+                                            />
+                                        ) : (
+                                            <div className="text-gray-900 font-medium text-lg border-b border-transparent pb-1">
+                                                {user?.name || "Not set"}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Email */}
+                                    <div className="group">
+                                        <label className="flex items-center text-sm font-medium text-gray-500 mb-2">
+                                            <Mail className="h-4 w-4 mr-2 text-[#c4ad94]" />
+                                            Email Address
+                                        </label>
+                                        <div className="flex items-center text-gray-900 font-medium text-lg border-b border-transparent pb-1">
+                                            {user?.email}
+                                            <span className="ml-2 px-2 py-0.5 bg-green-50 text-green-700 text-xs rounded-full font-normal border border-green-100">
+                                                Verified
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    {/* Phone */}
+                                    <div className="group">
+                                        <label className="flex items-center text-sm font-medium text-gray-500 mb-2">
+                                            <Phone className="h-4 w-4 mr-2 text-[#c4ad94]" />
+                                            Phone Number
+                                        </label>
+                                        {editing ? (
+                                            <Input
+                                                name="phone"
+                                                value={formData.phone}
+                                                onChange={handleChange}
+                                                placeholder="Enter phone number"
+                                                className="max-w-md bg-gray-50 border-gray-200 focus:bg-white transition-colors"
+                                            />
+                                        ) : (
+                                            <div className="text-gray-900 font-medium text-lg border-b border-transparent pb-1">
+                                                {user?.phone || <span className="text-gray-400 font-normal italic">Not set</span>}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Account ID / Status - Extra field for layout balance */}
+                                    <div>
+                                        <label className="flex items-center text-sm font-medium text-gray-500 mb-2">
+                                            <Star className="h-4 w-4 mr-2 text-[#c4ad94]" />
+                                            Account Status
+                                        </label>
+                                        <div className="text-gray-900 font-medium text-lg flex items-center gap-2">
+                                            Customer
+                                            <span className="h-1.5 w-1.5 rounded-full bg-green-500"></span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
-                        <Button onClick={handleLogout} variant="outline" className="w-full py-4 text-red-500 border-red-200 hover:bg-red-50">
-                            <LogOut className="h-4 w-4 mr-2" />Logout
-                        </Button>
+
+                        {/* Account Actions */}
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                            <h3 className="text-sm font-medium text-gray-900 mb-4">Account Actions</h3>
+                            <Button
+                                onClick={handleLogout}
+                                variant="outline"
+                                className="w-full sm:w-auto text-red-600 border-red-100 hover:bg-red-50 hover:border-red-200 transition-colors"
+                            >
+                                <LogOut className="h-4 w-4 mr-2" />
+                                Sign Out
+                            </Button>
+                        </div>
                     </div>
                 )}
 

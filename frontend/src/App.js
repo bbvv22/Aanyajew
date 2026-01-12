@@ -4,6 +4,7 @@ import axios from "axios";
 import "./App.css";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
+import ScrollToTop from "./components/ScrollToTop";
 import { CartProvider } from "./context/CartContext";
 import { WishlistProvider } from "./context/WishlistContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -32,6 +33,9 @@ import ShippingPage from "./pages/ShippingPage";
 import AppointmentPage from "./pages/AppointmentPage";
 import CareersPage from "./pages/CareersPage";
 import GuidesPage from "./pages/GuidesPage";
+import DiamondGuidePage from "./pages/DiamondGuidePage";
+import DiamondShapesPage from "./pages/DiamondShapesPage";
+import RingSettingsPage from "./pages/RingSettingsPage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 
@@ -116,6 +120,7 @@ function App() {
         <WishlistProvider>
           <OwnerProvider>
             <Router>
+              <ScrollToTop />
               <AppLayout>
                 <Routes>
                   {/* Public Routes */}
@@ -145,6 +150,9 @@ function App() {
                   <Route path="/book-appointment" element={<AppointmentPage />} />
                   <Route path="/careers" element={<CareersPage />} />
                   <Route path="/guides" element={<GuidesPage />} />
+                  <Route path="/guides/diamond-4cs" element={<DiamondGuidePage />} />
+                  <Route path="/guides/diamond-shapes" element={<DiamondShapesPage />} />
+                  <Route path="/guides/ring-settings" element={<RingSettingsPage />} />
 
                   {/* Owner Login */}
                   <Route path="/owner/login" element={<OwnerLoginPage />} />

@@ -7,7 +7,7 @@ import { useCart } from "../context/CartContext";
 
 const CheckoutPage = () => {
     const navigate = useNavigate();
-    const { cartItems, getCartTotal, clearCart, isLoaded } = useCart();
+    const { cartItems, getCartTotal, clearCart, isLoaded, coupon } = useCart();
     const [loading, setLoading] = useState(false);
     const [orderPlaced, setOrderPlaced] = useState(false);
     const [formData, setFormData] = useState({
@@ -36,6 +36,12 @@ const CheckoutPage = () => {
                 email: userData.email || "",
                 firstName: userData.name?.split(" ")[0] || "",
                 lastName: userData.name?.split(" ").slice(1).join(" ") || "",
+                phone: userData.phone || "",
+                address: userData.address || "",
+                city: userData.city || "",
+                state: userData.state || "Telangana",
+                postalCode: userData.pincode || "",
+                country: userData.country || "India"
             }));
         }
     }, [isLoaded, cartItems.length, navigate, orderPlaced]);
@@ -45,8 +51,9 @@ const CheckoutPage = () => {
     };
 
     const subtotal = getCartTotal();
-    const shipping = subtotal > 5000 ? 0 : 100;
-    const total = subtotal + shipping;
+    const discount = coupon ? coupon.discountAmount : 0;
+    const shipping = (subtotal - discount) > 5000 ? 0 : 100;
+    const total = (subtotal - discount) + shipping;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -78,7 +85,8 @@ const CheckoutPage = () => {
                     country: formData.country,
                     phone: formData.phone
                 },
-                paymentMethod: "cod" // Cash on Delivery for now
+                paymentMethod: "cod", // Cash on Delivery for now
+                couponCode: coupon?.code
             };
 
             const response = await fetch(`${backendUrl}/api/orders`, {
@@ -332,6 +340,14 @@ const CheckoutPage = () => {
                                         <span>Subtotal</span>
                                         <span>₹{subtotal.toLocaleString()}</span>
                                     </div>
+
+                                    {coupon && (
+                                        <div className="flex justify-between text-green-600">
+                                            <span>Discount ({coupon.code})</span>
+                                            <span>-₹{coupon.discountAmount.toLocaleString()}</span>
+                                        </div>
+                                    )}
+
                                     <div className="flex justify-between text-gray-600">
                                         <span>Shipping</span>
                                         <span>{shipping === 0 ? "Free" : `₹${shipping}`}</span>

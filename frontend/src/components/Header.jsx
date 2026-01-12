@@ -11,7 +11,7 @@ const Header = ({ isHome = true }) => {
   const navigate = useNavigate();
   const { getCartCount } = useCart();
   const { getWishlistCount } = useWishlist();
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState(null);
   const [featuredProducts, setFeaturedProducts] = useState([]);
@@ -206,7 +206,7 @@ const Header = ({ isHome = true }) => {
     const fetchNavigation = async () => {
       try {
         const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8006';
-        const response = await axios.get(`${backendUrl} /api/navigation`);
+        const response = await axios.get(`${backendUrl}/api/navigation`);
         if (response.data && response.data.length > 0) {
           // Ensure each item has featured array for display
           const itemsWithFeatured = response.data.map(item => ({
@@ -350,99 +350,35 @@ const Header = ({ isHome = true }) => {
                         Book Appointment
                       </Button>
                     </Link>
-                    {!user && (
+                    {!user ? (
                       <Link to="/login" className="block w-full" onClick={() => setMobileMenuOpen(false)}>
                         <Button className="w-full bg-[#c4ad94] text-white">
                           Log In / Register
                         </Button>
                       </Link>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Mobile Menu Toggle */}
-          <div className="flex md:hidden flex-1">
-            <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)}>
-              <Menu className="h-6 w-6 text-gray-800" />
-            </Button>
-          </div>
-
-          {/* Mobile Menu Overlay */}
-          {mobileMenuOpen && (
-            <div className="fixed inset-0 z-50 flex">
-              <div
-                className="absolute inset-0 bg-black/50"
-                onClick={() => setMobileMenuOpen(false)}
-              />
-              <div className="relative w-[300px] h-full bg-white shadow-xl overflow-y-auto transform transition-transform">
-                <div className="p-4 flex justify-between items-center border-b">
-                  <h2 className="text-lg font-serif">Menu</h2>
-                  <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(false)}>
-                    <X className="h-5 w-5" />
-                  </Button>
-                </div>
-                <div className="p-4 space-y-6">
-                  {/* Mobile Search */}
-                  <form onSubmit={(e) => {
-                    handleSearch(e);
-                    setMobileMenuOpen(false);
-                  }} className="flex">
-                    <Input
-                      type="text"
-                      placeholder="Search..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="rounded-r-none"
-                    />
-                    <Button type="submit" className="rounded-l-none bg-[#c4ad94]">
-                      <Search className="h-4 w-4 text-white" />
-                    </Button>
-                  </form>
-
-                  {/* Mobile Navigation */}
-                  <div className="space-y-4">
-                    {navItems.map((item, index) => (
-                      <div key={index}>
-                        <div className="font-medium text-gray-800 mb-2">{item.name}</div>
-                        <div className="pl-4 space-y-2 border-l-2 border-gray-100">
-                          <Link
-                            to={`/products?search=${encodeURIComponent(item.name)}`}
-                            className="block text-sm text-gray-600 py-1"
-                            onClick={() => setMobileMenuOpen(false)}
-                          >
-                            View All {item.name}
-                          </Link>
-                          {/* Flattening columns for mobile for simplicity */}
-                          {item.columns.flatMap(col => col.items).slice(0, 5).map((subItem, idx) => (
-                            <Link
-                              key={idx}
-                              to={`/products?search=${encodeURIComponent(subItem)}`}
-                              className="block text-sm text-gray-500 py-1"
-                              onClick={() => setMobileMenuOpen(false)}
-                            >
-                              {subItem}
-                            </Link>
-                          ))}
-                        </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <Link to="/profile" className="block w-full" onClick={() => setMobileMenuOpen(false)}>
+                          <Button variant="outline" className="w-full justify-start">
+                            <User className="h-4 w-4 mr-2" />
+                            My Profile
+                          </Button>
+                        </Link>
+                        <Button
+                          variant="ghost"
+                          className="w-full justify-start text-red-500 hover:text-red-600 hover:bg-red-50"
+                          onClick={() => {
+                            localStorage.removeItem('token');
+                            localStorage.removeItem('user');
+                            setUser(null);
+                            setMobileMenuOpen(false);
+                            navigate('/');
+                          }}
+                        >
+                          <LogOut className="h-4 w-4 mr-2" />
+                          Log Out
+                        </Button>
                       </div>
-                    ))}
-                  </div>
-
-                  <div className="border-t pt-4 space-y-3">
-                    <Link to="/book-appointment" className="block w-full" onClick={() => setMobileMenuOpen(false)}>
-                      <Button className="w-full bg-[#fdfbf7] text-[#5c5c5c] border border-[#e5e5e5]">
-                        Book Appointment
-                      </Button>
-                    </Link>
-                    {!user && (
-                      <Link to="/login" className="block w-full" onClick={() => setMobileMenuOpen(false)}>
-                        <Button className="w-full bg-[#c4ad94] text-white">
-                          Log In / Register
-                        </Button>
-                      </Link>
                     )}
                   </div>
                 </div>
@@ -450,97 +386,12 @@ const Header = ({ isHome = true }) => {
             </div>
           )}
 
-          {/* Mobile Menu Toggle */}
-          <div className="flex md:hidden flex-1">
-            <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)}>
-              <Menu className="h-6 w-6 text-gray-800" />
-            </Button>
-          </div>
 
-          {/* Mobile Menu Overlay */}
-          {mobileMenuOpen && (
-            <div className="fixed inset-0 z-50 flex">
-              <div
-                className="absolute inset-0 bg-black/50"
-                onClick={() => setMobileMenuOpen(false)}
-              />
-              <div className="relative w-[300px] h-full bg-white shadow-xl overflow-y-auto transform transition-transform">
-                <div className="p-4 flex justify-between items-center border-b">
-                  <h2 className="text-lg font-serif">Menu</h2>
-                  <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(false)}>
-                    <X className="h-5 w-5" />
-                  </Button>
-                </div>
-                <div className="p-4 space-y-6">
-                  {/* Mobile Search */}
-                  <form onSubmit={(e) => {
-                    handleSearch(e);
-                    setMobileMenuOpen(false);
-                  }} className="flex">
-                    <Input
-                      type="text"
-                      placeholder="Search..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="rounded-r-none"
-                    />
-                    <Button type="submit" className="rounded-l-none bg-[#c4ad94]">
-                      <Search className="h-4 w-4 text-white" />
-                    </Button>
-                  </form>
-
-                  {/* Mobile Navigation */}
-                  <div className="space-y-4">
-                    {navItems.map((item, index) => (
-                      <div key={index}>
-                        <div className="font-medium text-gray-800 mb-2">{item.name}</div>
-                        <div className="pl-4 space-y-2 border-l-2 border-gray-100">
-                          <Link
-                            to={`/products?search=${encodeURIComponent(item.name)}`}
-                            className="block text-sm text-gray-600 py-1"
-                            onClick={() => setMobileMenuOpen(false)}
-                          >
-                            View All {item.name}
-                          </Link>
-                          {/* Flattening columns for mobile for simplicity */}
-                          {item.columns.flatMap(col => col.items).slice(0, 5).map((subItem, idx) => (
-                            <Link
-                              key={idx}
-                              to={`/products?search=${encodeURIComponent(subItem)}`}
-                              className="block text-sm text-gray-500 py-1"
-                              onClick={() => setMobileMenuOpen(false)}
-                            >
-                              {subItem}
-                            </Link>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="border-t pt-4 space-y-3">
-                    <Link to="/book-appointment" className="block w-full" onClick={() => setMobileMenuOpen(false)}>
-                      <Button className="w-full bg-[#fdfbf7] text-[#5c5c5c] border border-[#e5e5e5]">
-                        Book Appointment
-                      </Button>
-                    </Link>
-                    {!user && (
-                      <Link to="/login" className="block w-full" onClick={() => setMobileMenuOpen(false)}>
-                        <Button className="w-full bg-[#c4ad94] text-white">
-                          Log In / Register
-                        </Button>
-                      </Link>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Logo */}
           <div className="flex-1 flex justify-center">
             <Link to="/" className="text-center group">
-              <h1 className="text-4xl font-serif text-transparent tracking-[0.15em] transition-colors"
+              <h1 className="text-2xl md:text-4xl font-serif text-transparent tracking-[0.15em] transition-colors"
                 style={{
                   WebkitTextStroke: '1px #b09e88',
                   fontFamily: 'Playfair Display, serif'
@@ -566,12 +417,12 @@ const Header = ({ isHome = true }) => {
               </Button>
             </Link>
             {user ? (
-              <div className="hidden md:flex items-center gap-4">
+              <div className="flex items-center gap-2 md:gap-4">
                 <Link to="/profile" className="flex items-center gap-2 text-sm text-gray-700 hover:text-[#c4ad94] transition-colors whitespace-nowrap">
-                  <User className="h-4 w-4" />
-                  <span>Hi, {user.name?.split(' ')[0]}</span>
+                  <User className="h-5 w-5 md:h-4 md:w-4" />
+                  <span className="hidden md:inline">Hi, {user.name?.split(' ')[0]}</span>
                 </Link>
-                <div className="h-4 w-px bg-gray-300 mx-1"></div>
+                <div className="hidden md:block h-4 w-px bg-gray-300 mx-1"></div>
                 <button
                   onClick={() => {
                     localStorage.removeItem('token');
@@ -579,16 +430,19 @@ const Header = ({ isHome = true }) => {
                     setUser(null);
                     navigate('/');
                   }}
-                  className="flex items-center gap-1 text-gray-700 hover:text-[#c4ad94]"
+                  className="hidden md:flex items-center gap-1 text-gray-700 hover:text-[#c4ad94]"
                   title="Logout"
                 >
                   <LogOut className="h-4 w-4" />
                 </button>
               </div>
             ) : (
-              <Link to="/login" className="hidden md:flex items-center gap-1 text-gray-700 hover:text-[#c4ad94]">
-                <User className="h-5 w-5" />
-                <span className="text-sm">Log in</span>
+              <Link to="/login" className="flex items-center gap-1 text-gray-700 hover:text-[#c4ad94]">
+                <User className="h-5 w-5 md:hidden" />
+                <div className="hidden md:flex items-center gap-1">
+                  <User className="h-5 w-5" />
+                  <span className="text-sm">Log in</span>
+                </div>
               </Link>
             )}
             <Link to="/wishlist" className="relative hidden md:block">
@@ -618,14 +472,7 @@ const Header = ({ isHome = true }) => {
                 </span>
               )}
             </Link>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="md:hidden text-gray-700"
-              onClick={() => setIsMenuOpen(!isMenuOpen)}
-            >
-              {isMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-            </Button>
+
           </div>
         </div>
       </div>
@@ -699,7 +546,7 @@ const Header = ({ isHome = true }) => {
                         >
                           <div className="aspect-square overflow-hidden mb-3 bg-white">
                             <img
-                              src={getFeaturedImage(navItems[activeDropdown].name, featIndex)}
+                              src={featured.image || getFeaturedImage(navItems[activeDropdown].name, featIndex)}
                               alt={featured.title}
                               className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                               onError={(e) => {
@@ -722,90 +569,7 @@ const Header = ({ isHome = true }) => {
             </div>
           )}
 
-          {/* Mobile menu */}
-          {isMenuOpen && (
-            <div className="md:hidden py-4 border-t border-gray-200 max-w-7xl mx-auto px-4">
-              {/* User Actions for Mobile */}
-              <div className="flex flex-col gap-3 pb-4 mb-4 border-b border-gray-200">
-                {user ? (
-                  <div className="flex items-center justify-between">
-                    <Link
-                      to="/profile"
-                      onClick={() => setIsMenuOpen(false)}
-                      className="flex items-center gap-2 text-sm text-gray-700 font-medium"
-                    >
-                      <User className="h-4 w-4" />
-                      <span>Hi, {user.name?.split(' ')[0]}</span>
-                    </Link>
-                    <button
-                      onClick={() => {
-                        localStorage.removeItem('token');
-                        localStorage.removeItem('user');
-                        setUser(null);
-                        setIsMenuOpen(false);
-                      }}
-                      className="text-sm text-[#c4ad94]"
-                    >
-                      Log out
-                    </button>
-                  </div>
-                ) : (
-                  <Link
-                    to="/login"
-                    onClick={() => setIsMenuOpen(false)}
-                    className="flex items-center gap-2 text-gray-700"
-                  >
-                    <User className="h-5 w-5" />
-                    <span>Log in / Register</span>
-                  </Link>
-                )}
-                <Link
-                  to="/wishlist"
-                  onClick={() => setIsMenuOpen(false)}
-                  className="flex items-center gap-2 text-gray-700"
-                >
-                  <Heart className="h-5 w-5" />
-                  <span>Wishlist {getWishlistCount() > 0 && `(${getWishlistCount()})`}</span>
-                </Link>
-                <Link
-                  to="/book-appointment"
-                  onClick={() => setIsMenuOpen(false)}
-                  className="flex items-center gap-2 text-gray-700"
-                >
-                  <span>📅</span>
-                  <span>Book Appointment</span>
-                </Link>
-              </div>
 
-              {/* Category Navigation */}
-              {navItems.map((item, index) => (
-                <div key={index} className="mb-4">
-                  <button className="w-full text-left font-medium text-gray-700 mb-2">
-                    {item.name}
-                  </button>
-                  <div className="pl-4">
-                    {item.columns.map((column, colIndex) => (
-                      <div key={colIndex} className="mb-3">
-                        {column.title && (
-                          <h4 className="text-xs font-semibold text-gray-500 mb-2">{column.title}</h4>
-                        )}
-                        {column.items.map((menuItem, itemIndex) => (
-                          <Link
-                            key={itemIndex}
-                            to={`/products?search=${encodeURIComponent(menuItem)}`}
-                            onClick={() => setIsMenuOpen(false)}
-                            className="block py-1 text-sm text-gray-600 hover:text-[#c4ad94]"
-                          >
-                            {menuItem}
-                          </Link>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </nav>
       )}
     </header>
