@@ -26,20 +26,13 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection with SSL workaround for Render
-import ssl
 mongo_url = os.environ['MONGO_URL']
 
-# Create SSL context that bypasses certificate verification
-# This fixes SSL handshake errors on Render with MongoDB Atlas
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
-
+# SSL workaround parameters for MongoDB Atlas compatibility
 client = AsyncIOMotorClient(
     mongo_url,
     tlsAllowInvalidCertificates=True,
-    tlsAllowInvalidHostnames=True,
-    ssl_context=ssl_context
+    tlsAllowInvalidHostnames=True
 )
 db = client[os.environ['DB_NAME']]
 
