@@ -130,75 +130,42 @@ def decode_token(token: str) -> Optional[str]:
     except:
         return None
 
-def send_email_sync(to_email: str, subject: str, body: str, is_html: bool = False):
-    """Blocking SMTP email function (to be run in thread)"""
-    import smtplib
-    import ssl
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-    
-    smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
-    smtp_port = int(os.environ.get('SMTP_PORT', 587))
-    smtp_user = os.environ.get('SMTP_USER')
-    smtp_password = SMTP_PASSWORD
-    from_email = SMTP_FROM_EMAIL or smtp_user
-    
-    if not smtp_user or not smtp_password:
-        logger.warning(f"SMTP not configured. Would send to {to_email}: {subject}")
-        print(f"DEBUG EMAIL: To: {to_email}, Subject: {subject}")
-        return
-    
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = from_email
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        
-        content_type = 'html' if is_html else 'plain'
-        msg.attach(MIMEText(body, content_type))
-        
-        context = ssl.create_default_context()
-        
-        # Try SSL first (port 465), then TLS (port 587)
-        if smtp_port == 465:
-            logger.info(f"Connecting to {smtp_host}:{smtp_port} using SSL...")
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=60) as server:
-                logger.info("SSL Connection established. Logging in...")
-                server.login(smtp_user, smtp_password)
-                logger.info("Logged in. Sending message...")
-                server.send_message(msg)
-        else:
-            logger.info(f"Connecting to {smtp_host}:{smtp_port} using TLS...")
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=60) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                logger.info("TLS Connection established. Logging in...")
-                server.login(smtp_user, smtp_password)
-                server.send_message(msg)
-        
-        logger.info(f"Email sent successfully to {to_email}")
-    except smtplib.SMTPAuthenticationError as e:
-        logger.error(f"SMTP Auth failed for {to_email}: {e}")
-        print(f"SMTP Auth Error: Check username/password in .env")
-        raise
-    except smtplib.SMTPException as e:
-        logger.error(f"SMTP Error sending to {to_email}: {e}")
-        print(f"SMTP Error: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
-        print(f"Email error: {e}")
-        raise
-
 async def send_email(to_email: str, subject: str, body: str, is_html: bool = False):
-    """Async wrapper for blocking email function"""
+    """
+    Deprecated: Direct SMTP is blocked on Render.
+    Use send_otp_via_vercel instead.
+    """
+    pass
+
+async def send_otp_via_vercel(to_email: str, otp: str, brand: str = "Annya Jewellers"):
+    """
+    Send OTP via Vercel Serverless Function (Mailer Microservice)
+    to bypass Render's SMTP port blocking.
+    """
+    import httpx
+    
+    mailer_url = os.environ.get("MAILER_URL") # e.g. https://your-project.vercel.app/api/send-otp-email
+    internal_key = os.environ.get("INTERNAL_KEY")
+    
+    if not mailer_url or not internal_key:
+        logger.error("MAILER_URL or INTERNAL_KEY not set. Cannot send email.")
+        return
+
     try:
-        # Run blocking SMTP call in a separate thread so it doesn't freeze the main loop
-        await asyncio.to_thread(send_email_sync, to_email, subject, body, is_html)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                mailer_url,
+                headers={"x-internal-key": internal_key},
+                json={"to": to_email, "otp": otp, "brand": brand},
+            )
+            response.raise_for_status()
+            logger.info(f"Email sent via Vercel to {to_email}")
+            
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Vercel Mailer returned error {e.response.status_code}: {e.response.text}")
+        raise
     except Exception as e:
-        logger.error(f"Async email wrapper failed: {e}")
-        # Re-raise so the caller knows it failed
+        logger.error(f"Failed to call Vercel Mailer: {e}")
         raise
 
 # ============================================
@@ -422,17 +389,9 @@ async def send_otp(data: OTPRequest, background_tasks: BackgroundTasks):
         try:
             # Use BackgroundTasks to send email immediately without blocking response
             background_tasks.add_task(
-                send_email_sync,
+                send_otp_via_vercel,
                 to_email=data.email,
-                subject="Your Annya Jewellers Verification Code",
-                body=f"""<div style="font-family: Arial, sans-serif; padding: 20px;">
-                    <h2 style="color: #c4ad94;">Annya Jewellers</h2>
-                    <p>Your verification code is:</p>
-                    <h1 style="font-size: 36px; letter-spacing: 8px; color: #333;">{otp}</h1>
-                    <p>This code expires in 5 minutes.</p>
-                    <p style="color: #666; font-size: 12px;">If you didn't request this, please ignore this email.</p>
-                </div>""",
-                is_html=True
+                otp=otp
             )
         except Exception as e:
             logger.error(f"Failed to schedule OTP email: {e}")
