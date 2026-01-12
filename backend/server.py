@@ -130,8 +130,8 @@ def decode_token(token: str) -> Optional[str]:
     except:
         return None
 
-async def send_email(to_email: str, subject: str, body: str, is_html: bool = False):
-    """Send email via SMTP"""
+def send_email_sync(to_email: str, subject: str, body: str, is_html: bool = False):
+    """Blocking SMTP email function (to be run in thread)"""
     import smtplib
     import ssl
     from email.mime.text import MIMEText
@@ -159,7 +159,6 @@ async def send_email(to_email: str, subject: str, body: str, is_html: bool = Fal
         
         context = ssl.create_default_context()
         
-        # Try SSL first (port 465), then TLS (port 587)
         # Try SSL first (port 465), then TLS (port 587)
         if smtp_port == 465:
             logger.info(f"Connecting to {smtp_host}:{smtp_port} using SSL...")
@@ -190,6 +189,16 @@ async def send_email(to_email: str, subject: str, body: str, is_html: bool = Fal
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {e}")
         print(f"Email error: {e}")
+        raise
+
+async def send_email(to_email: str, subject: str, body: str, is_html: bool = False):
+    """Async wrapper for blocking email function"""
+    try:
+        # Run blocking SMTP call in a separate thread so it doesn't freeze the main loop
+        await asyncio.to_thread(send_email_sync, to_email, subject, body, is_html)
+    except Exception as e:
+        logger.error(f"Async email wrapper failed: {e}")
+        # Re-raise so the caller knows it failed
         raise
 
 # ============================================
