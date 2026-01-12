@@ -22,19 +22,39 @@ import {
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "../../components/ui/alert-dialog";
 import { useOwner } from '../../context/OwnerContext';
+import { useToast } from '../../context/ToastContext';
 
 const ProductsAdmin = () => {
     const navigate = useNavigate();
+    const { success, error: showToastError } = useToast();
     const { getAuthHeader, backendUrl } = useOwner();
     const [products, setProducts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
-    const [deleteModal, setDeleteModal] = useState(null);
+    const [confirmDialog, setConfirmDialog] = useState({
+        open: false,
+        title: '',
+        description: '',
+        actionLabel: 'Continue',
+        variant: 'default',
+        onConfirm: () => { }
+    });
     const [activeTab, setActiveTab] = useState('all');
     const [selectedProducts, setSelectedProducts] = useState([]);
     const [showBulkActions, setShowBulkActions] = useState(false);
+
     const itemsPerPage = 15;
 
     const tabs = [
@@ -62,34 +82,52 @@ const ProductsAdmin = () => {
         }
     };
 
-    const handleDelete = async (productId) => {
+    const confirmDelete = async (productId) => {
         try {
             await axios.delete(`${backendUrl}/api/admin/products/${productId}`, {
                 headers: getAuthHeader()
             });
             setProducts(products.filter(p => p.id !== productId));
-            setDeleteModal(null);
         } catch (error) {
             console.error('Error deleting product:', error);
         }
     };
 
+    const handleDeleteClick = (product) => {
+        setConfirmDialog({
+            open: true,
+            title: 'Delete Product',
+            description: `Are you sure you want to delete "${product.name}"? This action cannot be undone.`,
+            actionLabel: 'Delete',
+            variant: 'destructive',
+            onConfirm: () => confirmDelete(product.id)
+        });
+    };
+
     const handleBulkAction = async (action) => {
         if (action === 'delete') {
-            if (!window.confirm(`Delete ${selectedProducts.length} products? This cannot be undone.`)) {
-                return;
-            }
-            try {
-                await axios.post(
-                    `${backendUrl}/api/admin/products/bulk-delete`,
-                    { productIds: selectedProducts },
-                    { headers: getAuthHeader() }
-                );
-                fetchProducts();
-            } catch (error) {
-                console.error('Bulk delete failed:', error);
-                alert('Failed to delete products');
-            }
+            setConfirmDialog({
+                open: true,
+                title: 'Delete Multiple Products',
+                description: `Are you sure you want to delete ${selectedProducts.length} selected products? This action cannot be undone.`,
+                actionLabel: 'Delete All',
+                variant: 'destructive',
+                onConfirm: async () => {
+                    try {
+                        await axios.post(
+                            `${backendUrl}/api/admin/products/bulk-delete`,
+                            { productIds: selectedProducts },
+                            { headers: getAuthHeader() }
+                        );
+                        fetchProducts();
+                        setSelectedProducts([]);
+                        setShowBulkActions(false);
+                    } catch (error) {
+                        console.error('Bulk delete failed:', error);
+                        showToastError('Failed to delete products');
+                    }
+                }
+            });
         } else if (action === 'archive') {
             // Update status to archived for all selected
             for (const productId of selectedProducts) {
@@ -104,6 +142,8 @@ const ProductsAdmin = () => {
                 }
             }
             fetchProducts();
+            setSelectedProducts([]);
+            setShowBulkActions(false);
         } else if (action === 'publish') {
             // Update status to active for all selected
             for (const productId of selectedProducts) {
@@ -118,9 +158,9 @@ const ProductsAdmin = () => {
                 }
             }
             fetchProducts();
+            setSelectedProducts([]);
+            setShowBulkActions(false);
         }
-        setSelectedProducts([]);
-        setShowBulkActions(false);
     };
 
     // Filter by tab
@@ -167,11 +207,14 @@ const ProductsAdmin = () => {
     };
 
     const formatCurrency = (value) => {
+        const numValue = parseFloat(value);
+        if (isNaN(numValue)) return '₹0';
+
         return new Intl.NumberFormat('en-IN', {
             style: 'currency',
             currency: 'INR',
             maximumFractionDigits: 0
-        }).format(value);
+        }).format(numValue);
     };
 
     // Import handler
@@ -199,16 +242,51 @@ const ProductsAdmin = () => {
                 if (errors.length > 10) message += `\n...and ${errors.length - 10} more errors.`;
             }
 
-            alert(message);
+            success(message);
             fetchProducts();
         } catch (error) {
             console.error('Import failed:', error);
-            alert(error.response?.data?.detail || 'Failed to import products');
+            showToastError(error.response?.data?.detail || 'Failed to import products');
         }
 
         // Reset file input
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
+        }
+    };
+
+    const handleExportCsv = async () => {
+        try {
+            const response = await axios.get(`${backendUrl}/api/admin/products/export`, {
+                headers: getAuthHeader(),
+                responseType: 'blob'
+            });
+
+            // Create a temporary URL for the blob
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+
+            // Get filename from response header if available, otherwise use default
+            const contentDisposition = response.headers['content-disposition'];
+            let filename = `products_export_${new Date().toISOString().split('T')[0]}.csv`;
+            if (contentDisposition) {
+                const fileNameMatch = contentDisposition.match(/filename=(.+)/);
+                if (fileNameMatch) filename = fileNameMatch[1];
+            }
+
+            link.setAttribute('download', filename);
+            document.body.appendChild(link);
+            link.click();
+
+            // Cleanup
+            link.remove();
+            window.URL.revokeObjectURL(url);
+
+            success(`Products exported successfully`);
+        } catch (error) {
+            console.error('Export failed:', error);
+            showToastError('Failed to export products');
         }
     };
 
@@ -244,7 +322,10 @@ const ProductsAdmin = () => {
                         <Upload className="h-4 w-4" />
                         Import
                     </button>
-                    <button className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50">
+                    <button
+                        onClick={handleExportCsv}
+                        className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
+                    >
                         <Download className="h-4 w-4" />
                         Export
                     </button>
@@ -426,7 +507,7 @@ const ProductsAdmin = () => {
                                             <Edit className="h-4 w-4" />
                                         </button>
                                         <button
-                                            onClick={() => setDeleteModal(product)}
+                                            onClick={() => handleDeleteClick(product)}
                                             className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
                                             title="Delete"
                                         >
@@ -484,33 +565,28 @@ const ProductsAdmin = () => {
                 )}
             </div>
 
-            {/* Delete Modal */}
-            {deleteModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4 shadow-xl">
-                        <div className="flex items-center gap-3 mb-4">
-                            <div className="p-2 bg-red-100 rounded-lg">
-                                <AlertCircle className="h-6 w-6 text-red-600" />
-                            </div>
-                            <h3 className="text-lg font-semibold text-gray-900">Delete Product</h3>
-                        </div>
-                        <p className="text-gray-600 mb-6">
-                            Are you sure you want to delete <strong>"{deleteModal.name}"</strong>? This action cannot be undone.
-                        </p>
-                        <div className="flex gap-3 justify-end">
-                            <Button variant="outline" onClick={() => setDeleteModal(null)}>
-                                Cancel
-                            </Button>
-                            <Button
-                                className="bg-red-600 hover:bg-red-700 text-white"
-                                onClick={() => handleDelete(deleteModal.id)}
-                            >
-                                Delete Product
-                            </Button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            {/* Confirmation Dialog */}
+            <AlertDialog open={confirmDialog.open} onOpenChange={(open) => {
+                if (!open) setConfirmDialog(prev => ({ ...prev, open: false }));
+            }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>{confirmDialog.title}</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {confirmDialog.description}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={confirmDialog.onConfirm}
+                            className={confirmDialog.variant === 'destructive' ? 'bg-red-600 hover:bg-red-700' : ''}
+                        >
+                            {confirmDialog.actionLabel}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 };

@@ -18,9 +18,11 @@ import {
     FileText
 } from 'lucide-react';
 import { useOwner } from '../../context/OwnerContext';
+import { useToast } from '../../context/ToastContext';
 
 const OrdersPage = () => {
     const { getAuthHeader, backendUrl } = useOwner();
+    const { success, error: showError } = useToast();
     const [searchParams, setSearchParams] = useSearchParams();
 
     const [orders, setOrders] = useState([]);
@@ -86,7 +88,7 @@ const OrdersPage = () => {
             setNewStatus('');
         } catch (error) {
             console.error('Error updating status:', error);
-            alert('Failed to update order status');
+            showError('Failed to update order status');
         }
     };
 

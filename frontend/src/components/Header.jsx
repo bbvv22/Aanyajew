@@ -537,32 +537,62 @@ const Header = ({ isHome = true }) => {
 
                   {/* Featured product images - right side, WIDER LANDSCAPE CARDS */}
                   <div className="flex gap-10">
-                    {navItems[activeDropdown].featured.map((featured, featIndex) => (
-                      <div key={featIndex} className="w-[260px]">
-                        <Link
-                          to={`/ products ? search = ${encodeURIComponent(featured.title)} `}
-                          onClick={() => setActiveDropdown(null)}
-                          className="group cursor-pointer block"
-                        >
-                          <div className="aspect-square overflow-hidden mb-3 bg-white">
-                            <img
-                              src={featured.image || getFeaturedImage(navItems[activeDropdown].name, featIndex)}
-                              alt={featured.title}
-                              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                              onError={(e) => {
-                                e.target.src = "https://res.cloudinary.com/dpwsnody1/image/upload/v1767732251/20251209_173505.jpg";
-                              }}
-                            />
+                    {(() => {
+                      // Use features from the nav item directly (populated by backend)
+                      const featuredItems = navItems[activeDropdown]?.featured || [];
+                      // Ensure we have exactly 2 slots
+                      const displayItems = [0, 1].map(index => featuredItems[index] || null);
+
+                      return displayItems.map((item, featIndex) => {
+                        // CASE 1: Empty Card (No item)
+                        if (!item) {
+                          return (
+                            <div key={featIndex} className="w-[260px]">
+                              <div className="aspect-square bg-gray-50 border border-gray-100 mb-3 flex items-center justify-center">
+                                <span className="text-gray-300 text-xs uppercase tracking-widest">Empty Slot</span>
+                              </div>
+                              <div className="h-4 w-24 bg-gray-100 rounded"></div>
+                            </div>
+                          );
+                        }
+
+                        // CASE 2: Featured Item Card (from Backend)
+                        return (
+                          <div key={featIndex} className="w-[260px]">
+                            <Link
+                              to={item.link || '#'}
+                              onClick={() => setActiveDropdown(null)}
+                              className="group cursor-pointer block"
+                            >
+                              <div className="aspect-square overflow-hidden mb-3 bg-gray-50 relative">
+                                {item.image ? (
+                                  <img
+                                    src={item.image}
+                                    alt={item.title || item.name}
+                                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                                    onError={(e) => {
+                                      e.target.style.display = 'none';
+                                      e.target.parentElement.classList.add('flex', 'items-center', 'justify-center');
+                                      e.target.parentElement.innerText = 'NO IMAGE';
+                                    }}
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-gray-400 text-xs uppercase tracking-widest">
+                                    No Image
+                                  </div>
+                                )}
+                              </div>
+                              <h4 className="text-sm text-gray-800 mb-2 font-normal truncate">
+                                {item.title || item.name}
+                              </h4>
+                              <span className="text-xs text-[#0891b2] underline hover:text-[#0e7490] uppercase tracking-wider">
+                                VIEW PRODUCT
+                              </span>
+                            </Link>
                           </div>
-                          <h4 className="text-sm text-gray-800 mb-2 font-normal">
-                            {featured.title}
-                          </h4>
-                          <span className="text-xs text-[#0891b2] underline hover:text-[#0e7490] uppercase tracking-wider">
-                            VIEW ALL
-                          </span>
-                        </Link>
-                      </div>
-                    ))}
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
               </div>

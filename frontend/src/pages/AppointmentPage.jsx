@@ -3,6 +3,7 @@ import axios from "axios";
 import { Calendar, Clock, MapPin } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { useToast } from "../context/ToastContext";
 
 const AppointmentPage = () => {
     const [submitted, setSubmitted] = useState(false);
@@ -16,11 +17,7 @@ const AppointmentPage = () => {
         message: ""
     });
     const [loading, setLoading] = useState(false);
-    const { success, error: showError } = useToast(); // Assuming ToastContext is available, need to import it. 
-    // Wait, need to see if ToastContext is imported. It wasn't in original.
-    // I will use local error handling or alert if Toast not available.
-    // Looking at file, ToastContext NOT imported. I will use alert for now or import it.
-    // I'll stick to simple alert or setSubmitted state for now.
+    const { success, error: showErrorToast } = useToast();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -32,7 +29,7 @@ const AppointmentPage = () => {
             setFormData({ name: "", email: "", phone: "", date: "", time: "", service: "", message: "" });
         } catch (error) {
             console.error("Error booking appointment:", error);
-            alert("Failed to book appointment. Please try again.");
+            showErrorToast("Failed to book appointment. Please try again.");
         } finally {
             setLoading(false);
         }

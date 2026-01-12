@@ -4,10 +4,12 @@ import { CreditCard, Truck, Shield, Check } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { useCart } from "../context/CartContext";
+import { useToast } from "../context/ToastContext";
 
 const CheckoutPage = () => {
     const navigate = useNavigate();
     const { cartItems, getCartTotal, clearCart, isLoaded, coupon } = useCart();
+    const { success, error: showError } = useToast();
     const [loading, setLoading] = useState(false);
     const [orderPlaced, setOrderPlaced] = useState(false);
     const [formData, setFormData] = useState({
@@ -62,7 +64,7 @@ const CheckoutPage = () => {
         try {
             const token = localStorage.getItem("token");
             if (!token) {
-                alert("Please login to place an order");
+                showError("Please login to place an order");
                 navigate("/login");
                 return;
             }
@@ -108,7 +110,7 @@ const CheckoutPage = () => {
             setOrderPlaced(true);
         } catch (error) {
             console.error("Error placing order:", error);
-            alert(error.message || "Failed to place order. Please try again.");
+            showError(error.message || "Failed to place order. Please try again.");
         } finally {
             setLoading(false);
         }

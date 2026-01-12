@@ -3,9 +3,10 @@ Annya Jewellers E-commerce Backend - Clean PostgreSQL Version
 Built from scratch with modern FastAPI and SQLAlchemy
 """
 from fastapi import FastAPI, Depends, HTTPException, status, Body, Query, APIRouter, UploadFile, File, Request
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.staticfiles import StaticFiles
+
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.future import select
@@ -1482,6 +1483,114 @@ async def import_products(
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
 
+class BulkDeleteRequest(BaseModel):
+    productIds: List[str]
+
+@api_router.post("/admin/products/bulk-delete")
+async def bulk_delete_products(
+    request: BulkDeleteRequest,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete multiple products by ID"""
+    try:
+        # Convert string IDs to UUIDs if needed, though Postgres handles string->uuid cast automatically often
+        # Validating IDs first
+        valid_uuids = []
+        for pid in request.productIds:
+            try:
+                valid_uuids.append(uuid_lib.UUID(pid))
+            except ValueError:
+                pass
+                
+        if not valid_uuids:
+            return {"success": True, "count": 0, "message": "No valid IDs provided"}
+            
+        # Execute delete
+        result = await db.execute(
+            delete(ProductDB).where(ProductDB.id.in_(valid_uuids))
+        )
+        await db.commit()
+        
+        return {
+            "success": True, 
+            "message": f"Successfully deleted {result.rowcount} products"
+        }
+    except Exception as e:
+        await db.rollback()
+        print(f"Bulk Delete Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Bulk delete failed: {str(e)}")
+
+
+
+@api_router.get("/admin/products/export")
+async def export_products(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Export all products to CSV"""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    # Fetch all products
+    stmt = select(ProductDB).order_by(ProductDB.created_at.desc())
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+
+    # Create CSV content
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Headers match import format
+    headers = [
+        'sku', 'barcode', 'hsnCode', 'name', 'description',
+        'category', 'subcategory', 'tags', 'status', 'metal',
+        'purity', 'grossWeight', 'netWeight', 'stoneWeight',
+        'stoneType', 'stoneQuality', 'sellingPrice', 'netPrice',
+        'costGold', 'costStone', 'costMaking', 'costOther',
+        'stockQuantity', 'lowStockThreshold'
+    ]
+    writer.writerow(headers)
+
+    for p in products:
+        writer.writerow([
+            p.sku,
+            p.barcode,
+            p.hsn_code,
+            p.name,
+            p.description,
+            p.category,
+            p.subcategory,
+            ",".join(p.tags) if p.tags else "",
+            p.status,
+            p.metal,
+            p.purity,
+            float(p.gross_weight) if p.gross_weight else 0.0,
+            float(p.net_weight) if p.net_weight else 0.0,
+            float(p.stone_weight) if p.stone_weight else 0.0,
+            p.stone_type,
+            p.stone_quality,
+            float(p.selling_price),
+            float(p.price) if p.price else float(p.selling_price),
+            float(p.cost_gold) if p.cost_gold else 0.0,
+            float(p.cost_stone) if p.cost_stone else 0.0,
+            float(p.cost_making) if p.cost_making else 0.0,
+            float(p.cost_other) if p.cost_other else 0.0,
+            p.stock_quantity,
+            p.low_stock_threshold
+        ])
+
+    output.seek(0)
+    
+    filename = f"products_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 @api_router.get("/admin/products")
 async def get_products(
     owner: UserDB = Depends(get_owner),
@@ -1497,14 +1606,39 @@ async def get_products(
         {
             "id": str(p.id),
             "sku": p.sku,
+            "barcode": p.barcode,
+            "hsnCode": p.hsn_code,
             "name": p.name,
+            "description": p.description,
             "category": p.category,
-            "image": p.image,
-            "price": p.selling_price,
-            "inventory": p.stock_quantity,
-            "inStock": p.in_stock,
+            "subcategory": p.subcategory,
+            "tags": ",".join(p.tags) if p.tags else "",
             "status": p.status,
-            "sales": 0, # Placeholder for now
+            "price": float(p.selling_price),
+            "image": p.image,
+            "metal": p.metal,
+            "purity": p.purity,
+            "grossWeight": float(p.gross_weight) if p.gross_weight else 0.0,
+            "netWeight": float(p.net_weight) if p.net_weight else 0.0,
+            "stoneWeight": float(p.stone_weight) if p.stone_weight else 0.0,
+            "stoneType": p.stone_type,
+            "stoneQuality": p.stone_quality,
+            "certification": p.certification,
+            "sellingPrice": float(p.selling_price),
+            "netPrice": float(p.price) if p.price else float(p.selling_price),
+            "costGold": float(p.cost_gold) if p.cost_gold else 0.0,
+            "costStone": float(p.cost_stone) if p.cost_stone else 0.0,
+            "costMaking": float(p.cost_making) if p.cost_making else 0.0,
+            "costOther": float(p.cost_other) if p.cost_other else 0.0,
+            "totalCost": float(p.total_cost) if p.total_cost else 0.0,
+            "profitMargin": float(p.profit_margin) if p.profit_margin else 0.0,
+            "marginPercent": float(p.margin_percent) if p.margin_percent else 0.0,
+            "stockQuantity": p.stock_quantity,
+            "lowStockThreshold": p.low_stock_threshold,
+            "inStock": p.in_stock,
+            "vendorName": p.vendor_name,
+            "createdAt": p.created_at.isoformat() if p.created_at else None,
+            "sales": 0, # Placeholder
             "rating": 5.0 # Placeholder
         }
         for p in products

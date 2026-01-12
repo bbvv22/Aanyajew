@@ -3,6 +3,16 @@ import { Link, useNavigate } from "react-router-dom";
 import { User, Package, Heart, LogOut, Mail, Phone, MapPin, Star, RefreshCw, X, Clock, CheckCircle, Truck, AlertCircle, Plus, Edit2, Trash2, Home, Briefcase } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { useToast } from "../context/ToastContext";
 import axios from "axios";
 import { useWishlist } from "../context/WishlistContext";
@@ -47,7 +57,16 @@ const ProfilePage = () => {
         phone: "",
         isDefault: false
     });
+
     const [submitting, setSubmitting] = useState(false);
+    const [confirmDialog, setConfirmDialog] = useState({
+        open: false,
+        title: "",
+        description: "",
+        actionLabel: "Continue",
+        variant: "default",
+        onConfirm: () => { }
+    });
 
     const backendUrl = process.env.REACT_APP_BACKEND_URL || "http://localhost:8006";
 
@@ -148,8 +167,7 @@ const ProfilePage = () => {
         window.location.reload();
     };
 
-    const handleCancelOrder = async (orderId) => {
-        if (!window.confirm("Are you sure you want to cancel this order?")) return;
+    const cancelOrder = async (orderId) => {
         try {
             const token = localStorage.getItem("token");
             await axios.post(`${backendUrl}/api/orders/${orderId}/cancel`, {}, {
@@ -160,6 +178,17 @@ const ProfilePage = () => {
         } catch (err) {
             showError(err.response?.data?.detail || "Failed to cancel order");
         }
+    };
+
+    const handleCancelOrder = (orderId) => {
+        setConfirmDialog({
+            open: true,
+            title: "Cancel Order",
+            description: "Are you sure you want to cancel this order? It cannot be undone.",
+            actionLabel: "Cancel Order",
+            variant: "destructive",
+            onConfirm: () => cancelOrder(orderId)
+        });
     };
 
     const handleRequestRefund = async () => {
@@ -236,8 +265,7 @@ const ProfilePage = () => {
         }
     };
 
-    const handleDeleteAddress = async (addressId) => {
-        if (!window.confirm("Are you sure you want to delete this address?")) return;
+    const deleteAddress = async (addressId) => {
         try {
             const token = localStorage.getItem("token");
             await axios.delete(`${backendUrl}/api/addresses/${addressId}`, {
@@ -248,6 +276,17 @@ const ProfilePage = () => {
         } catch (err) {
             showError(err.response?.data?.detail || "Failed to delete address");
         }
+    };
+
+    const handleDeleteAddress = (addressId) => {
+        setConfirmDialog({
+            open: true,
+            title: "Delete Address",
+            description: "Are you sure you want to delete this address? It cannot be undone.",
+            actionLabel: "Delete",
+            variant: "destructive",
+            onConfirm: () => deleteAddress(addressId)
+        });
     };
 
     const handleSetDefaultAddress = async (addressId) => {
@@ -817,6 +856,28 @@ const ProfilePage = () => {
                     </div>
                 )
             }
+            {/* Confirmation Dialog */}
+            <AlertDialog open={confirmDialog.open} onOpenChange={(open) => {
+                if (!open) setConfirmDialog(prev => ({ ...prev, open: false }));
+            }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>{confirmDialog.title}</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            {confirmDialog.description}
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={confirmDialog.onConfirm}
+                            className={confirmDialog.variant === 'destructive' ? 'bg-red-600 hover:bg-red-700' : ''}
+                        >
+                            {confirmDialog.actionLabel}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div >
     );
 };

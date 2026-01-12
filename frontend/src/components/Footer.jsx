@@ -3,15 +3,17 @@ import { Link } from 'react-router-dom';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Facebook, Instagram, MapPin, Phone, Mail } from 'lucide-react';
+import { useToast } from '../context/ToastContext';
 
 const Footer = () => {
   const [email, setEmail] = useState('');
+  const { success } = useToast();
 
   const handleSubscribe = (e) => {
     e.preventDefault();
     console.log('Subscribing email:', email);
     setEmail('');
-    alert('Thank you for subscribing!');
+    success('Thank you for subscribing!');
   };
 
   return (
