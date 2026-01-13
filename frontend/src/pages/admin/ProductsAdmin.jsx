@@ -59,10 +59,9 @@ const ProductsAdmin = () => {
 
     const tabs = [
         { id: 'all', label: 'All Products' },
-        { id: 'active', label: 'Active', filter: p => p.inStock },
-        { id: 'draft', label: 'Draft', filter: p => p.status === 'draft' },
-        { id: 'archived', label: 'Archived', filter: p => p.status === 'archived' },
-        { id: 'out_of_stock', label: 'Out of Stock', filter: p => !p.inStock }
+        { id: 'active', label: 'Active', filter: p => p.status === 'active' },
+        { id: 'inactive', label: 'Inactive', filter: p => p.status === 'inactive' },
+        { id: 'out_of_stock', label: 'Out of Stock', filter: p => p.stockQuantity === 0 }
     ];
 
     useEffect(() => {
@@ -122,44 +121,50 @@ const ProductsAdmin = () => {
                         fetchProducts();
                         setSelectedProducts([]);
                         setShowBulkActions(false);
+                        success('Products deleted successfully');
                     } catch (error) {
                         console.error('Bulk delete failed:', error);
                         showToastError('Failed to delete products');
                     }
                 }
             });
-        } else if (action === 'archive') {
-            // Update status to archived for all selected
-            for (const productId of selectedProducts) {
-                try {
-                    await axios.put(
-                        `${backendUrl}/api/admin/products/${productId}`,
-                        { status: 'archived' },
-                        { headers: getAuthHeader() }
-                    );
-                } catch (error) {
-                    console.error('Archive failed:', error);
-                }
-            }
-            fetchProducts();
-            setSelectedProducts([]);
-            setShowBulkActions(false);
-        } else if (action === 'publish') {
+        } else if (action === 'activate') {
             // Update status to active for all selected
-            for (const productId of selectedProducts) {
-                try {
-                    await axios.put(
-                        `${backendUrl}/api/admin/products/${productId}`,
+            try {
+                // In a real app this should be a bulk update endpoint
+                await Promise.all(selectedProducts.map(id =>
+                    axios.put(
+                        `${backendUrl}/api/admin/products/${id}`,
                         { status: 'active' },
                         { headers: getAuthHeader() }
-                    );
-                } catch (error) {
-                    console.error('Publish failed:', error);
-                }
+                    )
+                ));
+                fetchProducts();
+                setSelectedProducts([]);
+                setShowBulkActions(false);
+                success('Products activated successfully');
+            } catch (error) {
+                console.error('Activate failed:', error);
+                showToastError('Failed to activate products');
             }
-            fetchProducts();
-            setSelectedProducts([]);
-            setShowBulkActions(false);
+        } else if (action === 'deactivate') {
+            // Update status to inactive for all selected
+            try {
+                await Promise.all(selectedProducts.map(id =>
+                    axios.put(
+                        `${backendUrl}/api/admin/products/${id}`,
+                        { status: 'inactive' },
+                        { headers: getAuthHeader() }
+                    )
+                ));
+                fetchProducts();
+                setSelectedProducts([]);
+                setShowBulkActions(false);
+                success('Products deactivated successfully');
+            } catch (error) {
+                console.error('Deactivate failed:', error);
+                showToastError('Failed to deactivate products');
+            }
         }
     };
 
@@ -184,10 +189,9 @@ const ProductsAdmin = () => {
     // Count products per tab
     const tabCounts = {
         all: products.length,
-        active: products.filter(p => p.inStock).length,
-        draft: products.filter(p => p.status === 'draft').length,
-        archived: products.filter(p => p.status === 'archived').length,
-        out_of_stock: products.filter(p => !p.inStock).length
+        active: products.filter(p => p.status === 'active').length,
+        inactive: products.filter(p => p.status === 'inactive').length,
+        out_of_stock: products.filter(p => p.stockQuantity === 0).length
     };
 
     const toggleSelectAll = () => {
@@ -385,18 +389,18 @@ const ProductsAdmin = () => {
                     </span>
                     <div className="flex items-center gap-2 ml-auto">
                         <button
-                            onClick={() => handleBulkAction('publish')}
+                            onClick={() => handleBulkAction('activate')}
                             className="flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-200 rounded text-sm hover:bg-gray-50"
                         >
                             <CheckCircle className="h-4 w-4 text-green-500" />
-                            Publish
+                            Activate
                         </button>
                         <button
-                            onClick={() => handleBulkAction('archive')}
+                            onClick={() => handleBulkAction('deactivate')}
                             className="flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-200 rounded text-sm hover:bg-gray-50"
                         >
                             <Archive className="h-4 w-4 text-gray-500" />
-                            Archive
+                            Deactivate
                         </button>
                         <button
                             onClick={() => handleBulkAction('tag')}
@@ -476,18 +480,32 @@ const ProductsAdmin = () => {
                                     </span>
                                 </td>
                                 <td className="px-4 py-4">
-                                    <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${product.status === 'archived'
-                                        ? 'bg-gray-100 text-gray-600'
-                                        : product.status === 'draft'
-                                            ? 'bg-amber-100 text-amber-700'
-                                            : product.inStock
-                                                ? 'bg-emerald-100 text-emerald-700'
-                                                : 'bg-red-100 text-red-700'
-                                        }`}>
-                                        {product.status === 'archived' ? 'Archived' :
-                                            product.status === 'draft' ? 'Draft' :
-                                                product.inStock ? 'Active' : 'Out of Stock'}
-                                    </span>
+                                    <button
+                                        onClick={async () => {
+                                            const newStatus = product.status === 'active' ? 'inactive' : 'active';
+                                            try {
+                                                await axios.put(
+                                                    `${backendUrl}/api/admin/products/${product.id}`,
+                                                    { status: newStatus },
+                                                    { headers: getAuthHeader() }
+                                                );
+                                                // Optimistic update
+                                                setProducts(prev => prev.map(p =>
+                                                    p.id === product.id ? { ...p, status: newStatus } : p
+                                                ));
+                                                success(`Product marked as ${newStatus}`);
+                                            } catch (error) {
+                                                console.error('Status update failed:', error);
+                                                showToastError('Failed to update status');
+                                            }
+                                        }}
+                                        className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors ${product.status === 'active'
+                                                ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                            }`}
+                                    >
+                                        {product.status === 'active' ? 'Active' : 'Inactive'}
+                                    </button>
                                 </td>
                                 <td className="px-4 py-4">
                                     <div className="flex items-center justify-end gap-1">

@@ -13,7 +13,7 @@
         ]
       },
       {
-        "title": "DIAMOND CUT",
+        "title": "Title",
         "items": [
           "Round",
           "Oval",
@@ -28,7 +28,7 @@
     "name": "DIAMOND JEWELLERY",
     "columns": [
       {
-        "title": "JEWELLERY TYPE",
+        "title": "Title",
         "items": [
           "Diamond Eternity Rings",
           "Diamond Dress Rings",
@@ -41,7 +41,7 @@
         ]
       },
       {
-        "title": "GEMSTONE TYPE",
+        "title": "Title",
         "items": [
           "Diamond",
           "Sapphire",
@@ -57,7 +57,7 @@
     "name": "WEDDING RINGS",
     "columns": [
       {
-        "title": "LADIES WEDDING RINGS",
+        "title": "Title",
         "items": [
           "Diamond Rings",
           "White Gold Rings",
@@ -66,7 +66,7 @@
         ]
       },
       {
-        "title": "GENTS WEDDING RINGS",
+        "title": "Title",
         "items": [
           "White Gold Rings",
           "Yellow Gold Rings",

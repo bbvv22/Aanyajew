@@ -1,14 +1,49 @@
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
-import { Trash2, Minus, Plus, ShoppingBag, ArrowRight, Tag, X } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Trash2, Minus, Plus, ShoppingBag, ArrowRight, Tag, X, AlertCircle } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useCart } from "../context/CartContext";
 
 const CartPage = () => {
-    const { cartItems, updateQuantity, removeFromCart, getCartTotal, isLoaded, coupon, applyCoupon, removeCoupon } = useCart();
+    const { cartItems, updateQuantity, removeFromCart, getCartTotal, isLoaded, coupon, applyCoupon, removeCoupon, sessionId } = useCart();
     const [couponCode, setCouponCode] = useState("");
     const [couponError, setCouponError] = useState("");
     const [verifying, setVerifying] = useState(false);
+
+    // Checkout states
+    const navigate = useNavigate();
+    const [checkoutError, setCheckoutError] = useState("");
+    const [reserving, setReserving] = useState(false);
+
+    const handleCheckout = async () => {
+        setReserving(true);
+        setCheckoutError("");
+        try {
+            const backendUrl = process.env.REACT_APP_BACKEND_URL || "http://localhost:8006";
+            // Reserve all items sequentially to handle errors per item
+            for (const item of cartItems) {
+                const res = await fetch(`${backendUrl}/api/cart/reserve`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ product_id: item.id, session_id: sessionId })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.message || `Failed to reserve ${item.name}`);
+                }
+            }
+            // All reserved
+            navigate("/checkout", {
+                state: {
+                    reservationExpiry: Date.now() + 5 * 60 * 1000 // 5 minutes from now
+                }
+            });
+        } catch (error) {
+            setCheckoutError(error.message);
+        } finally {
+            setReserving(false);
+        }
+    };
 
     const subtotal = getCartTotal();
     const discount = coupon ? coupon.discountAmount : 0;
@@ -213,12 +248,21 @@ const CartPage = () => {
                                 )}
                             </div>
 
-                            <Link to="/checkout">
-                                <Button className="w-full py-6 bg-[#c4ad94] hover:bg-[#b39d84] text-white text-lg">
-                                    Proceed to Checkout
-                                    <ArrowRight className="ml-2 h-5 w-5" />
-                                </Button>
-                            </Link>
+                            {checkoutError && (
+                                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700">
+                                    <AlertCircle className="h-5 w-5" />
+                                    <p className="text-sm font-medium">{checkoutError}</p>
+                                </div>
+                            )}
+
+                            <Button
+                                onClick={handleCheckout}
+                                disabled={reserving || cartItems.length === 0}
+                                className="w-full py-6 bg-[#c4ad94] hover:bg-[#b39d84] text-white text-lg disabled:opacity-50"
+                            >
+                                {reserving ? "Reserving Items..." : "Proceed to Checkout"}
+                                {!reserving && <ArrowRight className="ml-2 h-5 w-5" />}
+                            </Button>
 
                             <Link
                                 to="/products"

@@ -16,15 +16,15 @@ const StockAlertsPage = () => {
     const fetchAlerts = async () => {
         try {
             // Fetch products with low stock
-            const response = await axios.get(`${backendUrl}/api/products`);
+            const response = await axios.get(`${backendUrl}/api/admin/products`, { headers: getAuthHeader() });
             const products = response.data;
 
             // Filter to low stock and out of stock
             const lowStockItems = products.filter(p => {
-                const stock = p.stock_quantity || 0;
-                const threshold = p.low_stock_threshold || 2;
+                const stock = p.stockQuantity || 0;
+                const threshold = p.lowStockThreshold || 2;
                 return stock <= threshold;
-            }).sort((a, b) => (a.stock_quantity || 0) - (b.stock_quantity || 0));
+            }).sort((a, b) => (a.stockQuantity || 0) - (b.stockQuantity || 0));
 
             setAlerts(lowStockItems);
         } catch (error) {
@@ -72,8 +72,8 @@ const StockAlertsPage = () => {
                     </div>
                 ) : (
                     alerts.map((product) => {
-                        const stock = product.stock_quantity || 0;
-                        const threshold = product.low_stock_threshold || 2;
+                        const stock = product.stockQuantity || 0;
+                        const threshold = product.lowStockThreshold || 2;
                         const isOutOfStock = stock <= 0;
 
                         return (

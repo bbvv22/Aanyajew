@@ -43,6 +43,7 @@ import ResetPasswordPage from "./pages/ResetPasswordPage";
 import OwnerLoginPage from "./pages/OwnerLoginPage";
 import AdminLayout from "./pages/admin/AdminLayout";
 import AdminDashboard from "./pages/admin/AdminDashboard";
+import AdminOrderDetailPage from "./pages/admin/AdminOrderDetailPage";
 import ProductsAdmin from "./pages/admin/ProductsAdmin";
 import ProductEditPage from "./pages/admin/ProductEditPage";
 import ReviewsAdmin from "./pages/admin/ReviewsAdmin";
@@ -55,6 +56,7 @@ import StockAlertsPage from "./pages/owner/StockAlertsPage";
 import TransfersPage from "./pages/owner/TransfersPage";
 import LedgerPage from "./pages/owner/LedgerPage";
 import VendorsPage from "./pages/owner/VendorsPage";
+import VendorDetailPage from "./pages/owner/VendorDetailPage";
 import PurchaseOrdersPage from "./pages/owner/PurchaseOrdersPage";
 import CustomersPage from "./pages/owner/CustomersPage";
 import AnalyticsPage from "./pages/owner/AnalyticsPage";
@@ -163,7 +165,7 @@ function App() {
 
                     {/* Orders */}
                     <Route path="orders" element={<OrdersPage />} />
-                    <Route path="orders/:id" element={<OrdersPage />} />
+                    <Route path="orders/:id" element={<AdminOrderDetailPage />} />
 
                     {/* Products */}
                     <Route path="products" element={<ProductsAdmin />} />
@@ -178,7 +180,7 @@ function App() {
 
                     {/* Vendors & Purchase Orders */}
                     <Route path="vendors" element={<VendorsPage />} />
-                    <Route path="vendors/:id" element={<VendorsPage />} />
+                    <Route path="vendors/:id" element={<VendorDetailPage />} />
                     <Route path="purchase-orders" element={<PurchaseOrdersPage />} />
                     <Route path="purchase-orders/:id" element={<PurchaseOrdersPage />} />
 

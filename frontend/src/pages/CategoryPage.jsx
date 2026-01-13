@@ -8,7 +8,7 @@ const CategoryPage = () => {
     const { category } = useParams();
     const [products, setProducts] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [priceRange, setPriceRange] = useState([0, 10000]);
+    const [priceRange, setPriceRange] = useState([0, 1000000]);
     const [showFilters, setShowFilters] = useState(false);
 
     const decodedCategory = decodeURIComponent(category);
@@ -18,7 +18,9 @@ const CategoryPage = () => {
             try {
                 const backendUrl = process.env.REACT_APP_BACKEND_URL || "http://localhost:8006";
                 const response = await axios.get(`${backendUrl}/api/products`);
-                const filtered = response.data.filter((p) => p.category === decodedCategory);
+                const filtered = response.data.filter((p) =>
+                    (p.category || "").trim().toLowerCase() === decodedCategory.trim().toLowerCase()
+                );
                 setProducts(filtered);
             } catch (error) {
                 console.error("Error fetching products:", error);
@@ -82,8 +84,8 @@ const CategoryPage = () => {
                                         <input
                                             type="radio"
                                             name="price"
-                                            checked={priceRange[0] === 0 && priceRange[1] === 10000}
-                                            onChange={() => setPriceRange([0, 10000])}
+                                            checked={priceRange[0] === 0 && priceRange[1] === 1000000}
+                                            onChange={() => setPriceRange([0, 1000000])}
                                             className="text-[#c4ad94]"
                                         />
                                         <span className="text-sm text-gray-600">All Prices</span>

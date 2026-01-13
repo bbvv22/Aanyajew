@@ -15,10 +15,12 @@ import {
     ChevronRight,
     MoreVertical,
     Package,
-    FileText
+    FileText,
+    Plus
 } from 'lucide-react';
 import { useOwner } from '../../context/OwnerContext';
 import { useToast } from '../../context/ToastContext';
+import CreateOrderModal from '../../components/admin/CreateOrderModal';
 
 const OrdersPage = () => {
     const { getAuthHeader, backendUrl } = useOwner();
@@ -35,16 +37,22 @@ const OrdersPage = () => {
     const [statusModalOpen, setStatusModalOpen] = useState(false);
     const [selectedOrder, setSelectedOrder] = useState(null);
     const [newStatus, setNewStatus] = useState('');
+    const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+
+    // Filters
+    const [channelFilter, setChannelFilter] = useState('all');
+    const [dateRange, setDateRange] = useState({ start: '', end: '' });
+
     const itemsPerPage = 15;
 
     const tabs = [
         { id: 'all', label: 'All Orders', count: 0 },
-        { id: 'pending', label: 'Open', count: 0, icon: Clock },
-        { id: 'unpaid', label: 'Unpaid', count: 0, icon: AlertCircle },
-        { id: 'unfulfilled', label: 'Unfulfilled', count: 0, icon: Package },
-        { id: 'fulfilled', label: 'Fulfilled', count: 0, icon: CheckCircle },
-        { id: 'returned', label: 'Returned', count: 0, icon: XCircle },
-        { id: 'cancelled', label: 'Cancelled', count: 0, icon: XCircle }
+        { id: 'pending', label: 'Unpaid', count: 0, icon: AlertCircle },
+        { id: 'paid', label: 'Paid', count: 0, icon: CheckCircle },
+        { id: 'shipped', label: 'Shipped', count: 0, icon: Truck },
+        { id: 'delivered', label: 'Delivered', count: 0, icon: CheckCircle },
+        { id: 'cancelled', label: 'Cancelled', count: 0, icon: XCircle },
+        { id: 'returned', label: 'Returned', count: 0, icon: XCircle }
     ];
 
     useEffect(() => {
@@ -92,17 +100,19 @@ const OrdersPage = () => {
         }
     };
 
-    const getStatusBadge = (status) => {
-        const styles = {
-            pending: 'bg-amber-100 text-amber-700',
-            paid: 'bg-blue-100 text-blue-700',
-            fulfilled: 'bg-emerald-100 text-emerald-700',
-            shipped: 'bg-purple-100 text-purple-700',
-            delivered: 'bg-green-100 text-green-700',
-            returned: 'bg-red-100 text-red-700',
-            cancelled: 'bg-gray-100 text-gray-700'
-        };
-        return styles[status] || 'bg-gray-100 text-gray-700';
+    const getStatusBadgeInfo = (order) => {
+        const status = order.status?.toLowerCase();
+        const paymentStatus = order.paymentStatus?.toLowerCase();
+
+        if (status === 'cancelled') return { label: 'Cancelled', className: 'bg-gray-100 text-gray-700' };
+        if (status === 'returned') return { label: 'Returned', className: 'bg-red-100 text-red-700' };
+        if (status === 'delivered') return { label: 'Delivered', className: 'bg-green-100 text-green-700' };
+        if (status === 'shipped') return { label: 'Shipped', className: 'bg-purple-100 text-purple-700' };
+
+        // For pending/processing, check payment
+        if (paymentStatus === 'paid') return { label: 'Paid', className: 'bg-blue-100 text-blue-700' };
+
+        return { label: 'Unpaid', className: 'bg-amber-100 text-amber-700' };
     };
 
     const formatCurrency = (value) => {
@@ -123,11 +133,29 @@ const OrdersPage = () => {
         });
     };
 
-    const filteredOrders = orders.filter(o =>
-        o.id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        o.customer?.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        o.customer?.email?.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+    const filteredOrders = orders.filter(o => {
+        // Search
+        const matchesSearch =
+            o.id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            o.customer?.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            o.customer?.email?.toLowerCase().includes(searchTerm.toLowerCase());
+
+        // Channel Filter
+        const matchesChannel = channelFilter === 'all' || o.channel === channelFilter;
+
+        // Date Filter
+        let matchesDate = true;
+        if (dateRange.start) {
+            matchesDate = matchesDate && new Date(o.createdAt) >= new Date(dateRange.start);
+        }
+        if (dateRange.end) {
+            const endDate = new Date(dateRange.end);
+            endDate.setHours(23, 59, 59, 999); // Include full end day
+            matchesDate = matchesDate && new Date(o.createdAt) <= endDate;
+        }
+
+        return matchesSearch && matchesChannel && matchesDate;
+    });
 
     const totalPages = Math.ceil(filteredOrders.length / itemsPerPage);
     const paginatedOrders = filteredOrders.slice(
@@ -151,6 +179,42 @@ const OrdersPage = () => {
         );
     };
 
+    const handleExport = () => {
+        if (!orders || orders.length === 0) return;
+
+        // CSV Headers
+        const headers = ['Order Number', 'Customer', 'Email', 'Items', 'Total', 'Status', 'Channel', 'Date'];
+
+        // CSV Rows
+        const rows = orders.map(order => [
+            order.order_number || order.id,
+            order.customer?.name || 'N/A',
+            order.customer?.email || 'N/A',
+            order.items?.length || 0,
+            order.total,
+            order.status,
+            order.channel,
+            new Date(order.createdAt).toLocaleDateString()
+        ]);
+
+        // Build CSV content
+        const csvContent = [
+            headers.join(','),
+            ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+        ].join('\n');
+
+        // Trigger Download
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', `orders_export_${new Date().toISOString().split('T')[0]}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     if (loading) {
         return (
             <div className="flex items-center justify-center h-[60vh]">
@@ -168,9 +232,19 @@ const OrdersPage = () => {
                     <p className="text-gray-500 mt-1">{orders.length} total orders</p>
                 </div>
                 <div className="flex items-center gap-3">
-                    <button className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50">
+                    <button
+                        onClick={handleExport}
+                        className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
+                    >
                         <Download className="h-4 w-4" />
                         Export
+                    </button>
+                    <button
+                        onClick={() => setIsCreateModalOpen(true)}
+                        className="flex items-center gap-2 px-4 py-2 bg-amber-500 border border-amber-600 rounded-lg text-sm font-medium text-white hover:bg-amber-600 shadow-sm transition-colors"
+                    >
+                        <Plus className="h-4 w-4" />
+                        Create Order
                     </button>
                 </div>
             </div>
@@ -198,7 +272,8 @@ const OrdersPage = () => {
             </div>
 
             {/* Search & Filters */}
-            <div className="flex items-center gap-4">
+            <div className="flex flex-col md:flex-row md:items-center gap-4">
+                {/* Search */}
                 <div className="relative flex-1 max-w-md">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                     <input
@@ -209,10 +284,52 @@ const OrdersPage = () => {
                         className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                     />
                 </div>
-                <button className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50">
-                    <Filter className="h-4 w-4" />
-                    Filters
-                </button>
+
+                {/* Filters Group */}
+                <div className="flex items-center gap-3 overflow-x-auto pb-1 md:pb-0">
+                    {/* Channel Filter */}
+                    <select
+                        value={channelFilter}
+                        onChange={(e) => { setChannelFilter(e.target.value); setCurrentPage(1); }}
+                        className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 bg-white"
+                    >
+                        <option value="all">All Channels</option>
+                        <option value="online">Online Store</option>
+                        <option value="pos">POS (Offline)</option>
+                    </select>
+
+                    {/* Date Range */}
+                    <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+                        <input
+                            type="date"
+                            value={dateRange.start}
+                            onChange={(e) => { setDateRange({ ...dateRange, start: e.target.value }); setCurrentPage(1); }}
+                            className="text-sm focus:outline-none text-gray-600"
+                        />
+                        <span className="text-gray-400">-</span>
+                        <input
+                            type="date"
+                            value={dateRange.end}
+                            onChange={(e) => { setDateRange({ ...dateRange, end: e.target.value }); setCurrentPage(1); }}
+                            className="text-sm focus:outline-none text-gray-600"
+                        />
+                    </div>
+
+                    {/* Clear Filters */}
+                    {(channelFilter !== 'all' || dateRange.start || dateRange.end) && (
+                        <button
+                            onClick={() => {
+                                setChannelFilter('all');
+                                setDateRange({ start: '', end: '' });
+                                setSearchTerm('');
+                                setCurrentPage(1);
+                            }}
+                            className="px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors whitespace-nowrap"
+                        >
+                            Clear
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Bulk Actions */}
@@ -234,7 +351,7 @@ const OrdersPage = () => {
 
             {/* Orders Table */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden overflow-x-auto">
-                <table className="w-full">
+                <table className="w-full table-fixed">
                     <thead className="bg-gray-50 border-b border-gray-200">
                         <tr>
                             <th className="w-12 px-4 py-3">
@@ -245,20 +362,21 @@ const OrdersPage = () => {
                                     className="rounded border-gray-300 text-amber-500 focus:ring-amber-500"
                                 />
                             </th>
-                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Order</th>
-                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Customer</th>
-                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Items</th>
-                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Total</th>
-                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
-                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Channel</th>
-                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
-                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-32">Order</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-40">Customer</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-64">Items</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-28">Total</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-24">Payment</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-24">Delivery</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-24">Channel</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-32">Date</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider w-20">Actions</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                         {paginatedOrders.map((order) => (
                             <tr key={order.id} className="hover:bg-gray-50">
-                                <td className="px-4 py-4">
+                                <td className="px-4 py-4 truncate">
                                     <input
                                         type="checkbox"
                                         checked={selectedOrders.includes(order.id)}
@@ -267,29 +385,56 @@ const OrdersPage = () => {
                                     />
                                 </td>
                                 <td className="px-4 py-4">
-                                    <Link to={`/admin/orders/${order.id}`} className="font-medium text-gray-900 hover:text-amber-600">
+                                    <Link to={`/admin/orders/${order.id}`} className="font-medium text-gray-900 hover:text-amber-600 block truncate">
                                         {order.order_number || `#${order.id.slice(0, 8)}`}
                                     </Link>
                                 </td>
                                 <td className="px-4 py-4">
-                                    <div>
-                                        <p className="text-sm text-gray-900">{order.customer?.name || 'Walk-in'}</p>
-                                        <p className="text-xs text-gray-500">{order.customer?.email}</p>
+                                    <div className="truncate">
+                                        <p className="text-sm text-gray-900 truncate" title={order.customer?.name}>{order.customer?.name || 'Walk-in'}</p>
+                                        <p className="text-xs text-gray-500 truncate" title={order.customer?.email}>{order.customer?.email}</p>
                                     </div>
                                 </td>
                                 <td className="px-4 py-4">
-                                    <p className="text-sm text-gray-900">{order.items?.length || 0} items</p>
-                                    <p className="text-xs text-gray-500 truncate max-w-[150px]">
-                                        {order.items?.map(i => i.name).join(', ')}
-                                    </p>
+                                    <div className="flex flex-col gap-1">
+                                        <span className="text-xs font-semibold text-gray-500">{order.items?.length || 0} items</span>
+                                        <div className="flex flex-col gap-0.5">
+                                            {order.items?.map((item, idx) => (
+                                                <span key={idx} className="text-sm text-gray-800 truncate" title={item.name}>
+                                                    • {item.name}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
                                 </td>
                                 <td className="px-4 py-4 font-medium text-gray-900">
                                     {formatCurrency(order.total)}
                                 </td>
                                 <td className="px-4 py-4">
-                                    <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${getStatusBadge(order.status)}`}>
-                                        {order.status?.charAt(0).toUpperCase() + order.status?.slice(1)}
+                                    <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${order.paymentStatus === 'paid'
+                                        ? 'bg-green-100 text-green-700'
+                                        : 'bg-amber-100 text-amber-700'
+                                        }`}>
+                                        {order.paymentStatus === 'paid' ? 'Paid' : 'Unpaid'}
                                     </span>
+                                </td>
+                                <td className="px-4 py-4">
+                                    {(() => {
+                                        const status = order.status || 'pending';
+                                        const styles = {
+                                            pending: 'bg-gray-100 text-gray-700',
+                                            shipped: 'bg-purple-100 text-purple-700',
+                                            delivered: 'bg-green-100 text-green-700',
+                                            cancelled: 'bg-red-100 text-red-700',
+                                            returned: 'bg-orange-100 text-orange-700'
+                                        };
+                                        const label = status.charAt(0).toUpperCase() + status.slice(1);
+                                        return (
+                                            <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${styles[status] || styles.pending}`}>
+                                                {label}
+                                            </span>
+                                        );
+                                    })()}
                                 </td>
                                 <td className="px-4 py-4">
                                     <span className={`text-xs font-medium ${order.channel === 'online' ? 'text-blue-600' : 'text-purple-600'}`}>
@@ -384,36 +529,27 @@ const OrdersPage = () => {
 
             {/* Status Update Modal */}
             {statusModalOpen && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg p-6 w-full max-w-md">
-                        <h3 className="text-lg font-semibold mb-4">Update Order Status</h3>
-                        <p className="text-sm text-gray-600 mb-4">
-                            Order #{selectedOrder?.id.slice(0, 8).toUpperCase()}
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
+                        <h3 className="text-lg font-bold mb-4">Update Status</h3>
+                        <p className="text-sm text-gray-500 mb-4">
+                            Change status for order #{selectedOrder?.order_number}
                         </p>
-                        <div className="space-y-2 mb-6">
-                            <label className="block text-sm font-medium text-gray-700">New Status</label>
-                            <select
-                                value={newStatus}
-                                onChange={(e) => setNewStatus(e.target.value)}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
-                            >
-                                <option value="pending">Pending</option>
-                                <option value="paid">Paid</option>
-                                <option value="fulfilled">Fulfilled</option>
-                                <option value="shipped">Shipped</option>
-                                <option value="delivered">Delivered</option>
-                                <option value="cancelled">Cancelled</option>
-                                <option value="returned">Returned</option>
-                            </select>
-                        </div>
-                        <div className="flex gap-3 justify-end">
+                        <select
+                            value={newStatus}
+                            onChange={(e) => setNewStatus(e.target.value)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-6"
+                        >
+                            <option value="">Select Status</option>
+                            <option value="pending">Pending</option>
+                            <option value="shipped">Shipped</option>
+                            <option value="delivered">Delivered</option>
+                            <option value="cancelled">Cancelled</option>
+                        </select>
+                        <div className="flex justify-end gap-3">
                             <button
-                                onClick={() => {
-                                    setStatusModalOpen(false);
-                                    setSelectedOrder(null);
-                                    setNewStatus('');
-                                }}
-                                className="px-4 py-2 text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
+                                onClick={() => setStatusModalOpen(false)}
+                                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg"
                             >
                                 Cancel
                             </button>
@@ -421,12 +557,21 @@ const OrdersPage = () => {
                                 onClick={handleUpdateStatus}
                                 className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600"
                             >
-                                Update Status
+                                Update
                             </button>
                         </div>
                     </div>
                 </div>
             )}
+
+            <CreateOrderModal
+                isOpen={isCreateModalOpen}
+                onClose={() => setIsCreateModalOpen(false)}
+                onOrderCreated={() => {
+                    fetchOrders();
+                    // Also refresh stats if needed, but fetchOrders is enough for the list
+                }}
+            />
         </div>
     );
 };

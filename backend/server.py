@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, selectinload
 from sqlalchemy.future import select
 from sqlalchemy import text, func, update, delete, or_, and_
 from passlib.context import CryptContext
@@ -34,7 +34,7 @@ load_dotenv(env_path)
 
 # Import models
 from database import get_db, create_tables
-from db_models import UserDB, OrderDB, ProductDB, VendorDB, CouponDB
+from db_models import UserDB, OrderDB, ProductDB, VendorDB, CouponDB, LocationDB, TransferDB, InventoryLedgerDB, PurchaseOrderDB
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -358,6 +358,40 @@ async def get_categories(db: AsyncSession = Depends(get_db)):
     )
     categories = [row[0] for row in result.all() if row[0]]
     return categories
+
+@api_router.get("/categories/tree")
+async def get_categories_tree(db: AsyncSession = Depends(get_db)):
+    """Get category and subcategory hierarchy based on existing products"""
+    # Fetch all distinct pairs of (category, subcategory)
+    result = await db.execute(
+        select(ProductDB.category, ProductDB.subcategory)
+        .where(ProductDB.status == 'active')
+        .distinct()
+    )
+    rows = result.all()
+    
+    # Organize into tree
+    tree = {}
+    for cat, sub in rows:
+        if not cat: continue
+        cat = cat.strip()
+        sub = sub.strip() if sub else None
+        
+        if cat not in tree:
+            tree[cat] = set()
+        
+        if sub:
+            tree[cat].add(sub)
+            
+    # Format as list
+    return [
+        {
+            "name": cat,
+            "subcategories": sorted(list(subs))
+        }
+        for cat, subs in tree.items()
+    ]
+
 
 # ============================================
 # AUTH ENDPOINTS
@@ -850,6 +884,43 @@ async def get_customers(
     
     return customer_list
 
+class CustomerCreate(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+
+@api_router.post("/admin/customers")
+async def create_customer(
+    customer_data: CustomerCreate,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create new customer"""
+    import uuid as uuid_lib
+    from passlib.context import CryptContext
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    
+    # Check existing
+    res = await db.execute(select(UserDB).where(UserDB.email == customer_data.email))
+    if res.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email already registered")
+        
+    new_customer = UserDB(
+        id=str(uuid_lib.uuid4()),
+        email=customer_data.email,
+        full_name=customer_data.name,
+        phone=customer_data.phone,
+        password_hash=pwd_context.hash("customer123"), # Default password
+        role="customer",
+        is_active=True
+    )
+    
+    db.add(new_customer)
+    await db.commit()
+    await db.refresh(new_customer)
+    
+    return {"id": new_customer.id, "name": new_customer.full_name, "email": new_customer.email}
+
 # ============================================
 # DASHBOARD ANALYTICS (real data)
 # ============================================
@@ -857,25 +928,36 @@ async def get_customers(
 @api_router.get("/navigation")
 async def get_navigation_tree(db: AsyncSession = Depends(get_db)):
     """
-    Returns the navigation structure with dynamic featured products.
-    If no products found for a category, featured list is empty (hiding mock images).
+    Returns the navigation structure.
+    Priority:
+    1. Manual Configuration (navigation_config.json) if it exists.
+    2. Dynamic DB Structure (as fallback).
+    
+    Both methods get dynamic Featured Products populated at runtime.
     """
     from sqlalchemy.sql.expression import func
+    import json
+    import os
     
-    # Helper to get 2 random products for a category/keyword
-    async def get_featured(keywords):
-        # Build search filters
+    # --- Helper: Get Featured Products ---
+    async def get_featured_products(category_name, keywords=None):
+        # Build filters. If keywords provided (from old config), use them.
+        # Otherwise match category name.
         filters = []
-        for keyword in keywords:
-            filters.append(ProductDB.category.ilike(f"%{keyword}%"))
-            filters.append(ProductDB.subcategory.ilike(f"%{keyword}%"))
-            filters.append(ProductDB.name.ilike(f"%{keyword}%"))
-            
+        if keywords:
+             for k in keywords:
+                 filters.append(ProductDB.category.ilike(f"%{k}%"))
+                 filters.append(ProductDB.subcategory.ilike(f"%{k}%"))
+                 filters.append(ProductDB.name.ilike(f"%{k}%"))
+             filter_cond = or_(*filters)
+        else:
+             filter_cond = (ProductDB.category == category_name)
+
         stmt = (
             select(ProductDB)
             .where(
                 and_(
-                    or_(*filters),
+                    filter_cond,
                     ProductDB.status == 'active',
                     ProductDB.stock_quantity > 0,
                     ProductDB.image.isnot(None),
@@ -887,94 +969,96 @@ async def get_navigation_tree(db: AsyncSession = Depends(get_db)):
         )
         result = await db.execute(stmt)
         products = result.scalars().all()
-        
         return [
-            {
-                "title": p.name,
-                "link": f"/product/{p.id}",
-                "image": p.image
-            } 
+            {"title": p.name, "link": f"/product/{p.id}", "image": p.image}
             for p in products
         ]
 
-    # Define default navigation structure
-    default_nav_structure = [
-        {
-            "name": 'ENGAGEMENT RINGS',
-            "keywords": ["engagement"],
-            "columns": [
-                {"title": None, "items": ['Solitaire Diamond Rings', 'Halo Diamond Rings', 'Three Stone Diamond Rings', 'Lab Grown Diamond Rings', 'All Engagement Rings']},
-                {"title": 'DIAMOND CUT', "items": ['Round', 'Oval', 'Emerald', 'Pear', 'Other']}
-            ]
-        },
-        {
-            "name": 'DIAMOND JEWELLERY',
-            "keywords": ["diamond"],
-            "columns": [
-                {"title": 'JEWELLERY TYPE', "items": ['Diamond Eternity Rings', 'Diamond Dress Rings', 'Diamond Pendants', 'Diamond Bracelets', 'Diamond Bangles', 'Diamond Earrings', 'Diamond Necklets', 'All Diamond Jewellery']},
-                {"title": 'GEMSTONE TYPE', "items": ['Diamond', 'Sapphire', 'Emerald', 'Ruby', 'Pearl', 'All Gemstone Jewellery']}
-            ]
-        },
-        {
-            "name": 'WEDDING RINGS',
-            "keywords": ["wedding", "band"],
-            "columns": [
-                {"title": 'LADIES WEDDING RINGS', "items": ['Diamond Rings', 'White Gold Rings', 'Yellow Gold Rings', 'Platinum Rings']},
-                {"title": 'GENTS WEDDING RINGS', "items": ['White Gold Rings', 'Yellow Gold Rings', 'Platinum Rings', 'All Wedding Rings']}
-            ]
-        },
-        {
-            "name": 'GOLD JEWELLERY',
-            "keywords": ["gold"],
-            "columns": [
-                {"title": None, "items": ['Gold Pendants', 'Gold Bracelets', 'Gold Bangles', 'Gold Earrings', 'Gold Necklets']},
-                {"title": None, "items": ['Gold Rings', 'Gold Chains', 'All Gold Jewellery']}
-            ]
-        },
-        {
-            "name": 'SILVER JEWELLERY',
-            "keywords": ["silver"],
-            "columns": [
-                {"title": None, "items": ['Silver Rings', 'Silver Pendants', 'Silver Bracelets']},
-                {"title": None, "items": ['Silver Earrings', 'Silver Necklets', 'All Silver Jewellery']}
-            ]
-        }
-    ]
+    nav_structure = []
+    use_dynamic = True
 
-    # Try to load saved navigation from config file
-    nav_structure = default_nav_structure
-    try:
-        if os.path.exists(NAVIGATION_FILE):
+    # 1. Try to load Manual Configuration
+    if os.path.exists(NAVIGATION_FILE):
+        try:
             with open(NAVIGATION_FILE, 'r') as f:
                 saved_nav = json.load(f)
-                if saved_nav and len(saved_nav) > 0:
-                    # Add keywords based on category name for featured product lookup
-                    keyword_map = {
-                        "ENGAGEMENT RINGS": ["engagement"],
-                        "DIAMOND JEWELLERY": ["diamond"],
-                        "WEDDING RINGS": ["wedding", "band"],
-                        "GOLD JEWELLERY": ["gold"],
-                        "SILVER JEWELLERY": ["silver"]
-                    }
-                    nav_structure = []
-                    for item in saved_nav:
-                        nav_structure.append({
-                            "name": item.get("name", ""),
-                            "keywords": keyword_map.get(item.get("name", "").upper(), [item.get("name", "").lower().split()[0]]),
-                            "columns": item.get("columns", [])
-                        })
-    except Exception as e:
-        logger.error(f"Error loading saved navigation: {e}")
-        nav_structure = default_nav_structure
+                if saved_nav and isinstance(saved_nav, list) and len(saved_nav) > 0:
+                    nav_structure = saved_nav
+                    use_dynamic = False
+        except Exception as e:
+            print(f"Error loading navigation config: {e}")
+            # Fallback to dynamic
 
-    # Populate featured arrays dynamically
+    # 2. Dynamic Fallback
+    if use_dynamic:
+        # Fetch all distinct Category/Subcategory pairs
+        result = await db.execute(
+            select(ProductDB.category, ProductDB.subcategory)
+            .where(ProductDB.status == 'active')
+            .distinct()
+            .order_by(ProductDB.category, ProductDB.subcategory)
+        )
+        rows = result.all()
+        
+        # Group by Category
+        tree = {}
+        for cat, sub in rows:
+            if not cat: continue
+            cat = cat.strip()
+            sub = sub.strip() if sub else None
+            if cat not in tree: tree[cat] = set()
+            if sub: tree[cat].add(sub)
+        
+        # Sort Categories
+        sorted_categories = sorted(list(tree.keys()))
+        priority_order = ["Engagement Rings", "Diamond Jewellery", "Wedding Rings", "Gold Jewellery", "Silver Jewellery"]
+        def sort_key(x):
+            try: return priority_order.index(x)
+            except ValueError: return 999 + (1 if x > "" else 0)
+        sorted_categories.sort(key=sort_key)
+
+        for cat in sorted_categories:
+            subcats = sorted(list(tree[cat]))
+            
+            # Split into columns
+            columns = []
+            chunk_size = 6
+            for i in range(0, len(subcats), chunk_size):
+                chunk = subcats[i:i + chunk_size]
+                columns.append({
+                    "title": "Browse" if i == 0 else None,
+                    "items": chunk
+                })
+            
+            if not columns: columns.append({"title": None, "items": []})
+            
+            # Add "All [Category]"
+            if columns[0]["items"]: columns[0]["items"].append(f"All {cat}")
+            else: columns[0]["items"] = [f"All {cat}"]
+
+            nav_structure.append({
+                "name": cat,
+                "columns": columns
+            })
+
+    # 3. Populate Featured Products for the final structure
     final_nav = []
     for item in nav_structure:
-        featured_items = await get_featured(item.get("keywords", []))
+        # Check if item has 'keywords' (from manual config) or just 'name'
+        keywords = item.get("keywords")
+        # Legacy config might imply keywords map. 
+        # But simpler: use name as category lookup if keywords missing.
+        
+        cat_name = item.get("name", "")
+        
+        # If manual config has specific keywords, use them.
+        # Otherwise, assume the manual category name matches DB category name.
+        featured = await get_featured_products(cat_name, keywords)
+        
         final_nav.append({
-            "name": item["name"],
-            "columns": item["columns"],
-            "featured": featured_items  # Will be list of 0-2 items
+            "name": cat_name,
+            "columns": item.get("columns", []),
+            "featured": featured
         })
         
     return final_nav
@@ -983,49 +1067,72 @@ async def get_navigation_tree(db: AsyncSession = Depends(get_db)):
 @api_router.get("/admin/dashboard")
 async def get_dashboard_stats(
     period: str = "7d",
+    channel: str = None,
+    start_date: str = None,
+    end_date: str = None,
     owner: UserDB = Depends(get_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """Get dashboard statistics with percentage changes"""
     from datetime import datetime, timedelta, timezone
     
-    # Calculate date ranges
-    days_map = {"today": 1, "7d": 7, "30d": 30, "90d": 90}
-    days = days_map.get(period, 7)
-    
     now = datetime.now(timezone.utc)
-    current_start = now - timedelta(days=days)
-    previous_start = current_start - timedelta(days=days)
+    
+    if period == 'custom' and start_date and end_date:
+        try:
+            # Parse ISO formatted dates (assuming YYYY-MM-DD)
+            # Add time components to cover the full day
+            dt_start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+            dt_end = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+            
+            # Calculate duration for previous period comparison
+            duration = dt_end - dt_start
+            
+            current_start = dt_start
+            now = dt_end # Use custom end date instead of 'now' for the query limit
+            previous_start = current_start - duration
+        except ValueError:
+             # Fallback if parsing fails
+             current_start = now - timedelta(days=7)
+             previous_start = current_start - timedelta(days=7)
+    else:
+        # Standard periods
+        if period == 'today':
+            import pytz
+            ist = pytz.timezone('Asia/Kolkata')
+            now_ist = datetime.now(ist)
+            today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+            current_start = today_start_ist.astimezone(timezone.utc)
+            previous_start = current_start - timedelta(days=1)
+        else:
+            days_map = {"7d": 7, "30d": 30, "90d": 90}
+            days = days_map.get(period, 7)
+            current_start = now - timedelta(days=days)
+            previous_start = current_start - timedelta(days=days)
     
     async def get_period_stats(start_time, end_time):
-        # Gross sales
-        gross_sales_res = await db.execute(
-            select(func.sum(OrderDB.grand_total))
-            .where(and_(OrderDB.created_at >= start_time, OrderDB.created_at < end_time))
-        )
-        gross_sales = gross_sales_res.scalar() or 0
+        # Build base conditions
+        conditions = [OrderDB.created_at >= start_time, OrderDB.created_at < end_time]
+        if channel:
+            if channel == 'online':
+                conditions.append(OrderDB.channel == 'online')
+            else: # pos
+                conditions.append(OrderDB.channel != 'online')
         
-        # Net sales (paid)
-        net_sales_res = await db.execute(
-            select(func.sum(OrderDB.grand_total))
-            .where(and_(
-                OrderDB.created_at >= start_time, 
-                OrderDB.created_at < end_time,
-                OrderDB.payment_status == 'paid'
-            ))
-        )
-        net_sales = net_sales_res.scalar() or 0
+        from sqlalchemy import case
         
-        # Gross profit
-        gross_profit_res = await db.execute(
-            select(func.sum(OrderDB.gross_profit))
-            .where(and_(
-                OrderDB.created_at >= start_time,
-                OrderDB.created_at < end_time,
-                OrderDB.payment_status == 'paid'
-            ))
-        )
-        gross_profit = gross_profit_res.scalar() or 0
+        stmt = select(
+            func.sum(OrderDB.grand_total).label('gross_sales'),
+            func.sum(case((OrderDB.payment_status == 'paid', OrderDB.grand_total), else_=0)).label('net_sales'),
+            func.sum(case((OrderDB.payment_status == 'paid', OrderDB.gross_profit), else_=0)).label('gross_profit')
+        ).where(and_(*conditions))
+        
+        result = await db.execute(stmt)
+        row = result.one()
+        
+        gross_sales = row.gross_sales or 0
+        net_sales = row[1] or 0 # accessing by index/label
+        gross_profit = row[2] or 0
         
         # Net profit (simplified)
         net_profit = gross_profit
@@ -1049,24 +1156,28 @@ async def get_dashboard_stats(
         return f"{sign}{change:.1f}%"
 
     # Other non-comparative stats
-    # Order count
-    order_count_result = await db.execute(
-        select(func.count()).select_from(OrderDB)
-        .where(OrderDB.created_at >= current_start)
-    )
-    order_count = order_count_result.scalar() or 0
+    # Combined order counts
+    conditions = [OrderDB.created_at >= current_start]
+    if channel:
+        if channel == 'online':
+            conditions.append(OrderDB.channel == 'online')
+        else:
+            conditions.append(OrderDB.channel != 'online')
+            
+    stmt = select(
+        func.count().label('total_orders'),
+        func.count().filter(OrderDB.status == 'pending').label('pending_orders'),
+        func.count().filter(OrderDB.status == 'delivered').label('delivered_orders'),
+        func.count().filter(OrderDB.status == 'returned').label('returned_orders')
+    ).where(and_(*conditions))
     
-    # Pending orders count
-    pending_count_result = await db.execute(
-        select(func.count()).select_from(OrderDB)
-        .where(
-            and_(
-                OrderDB.created_at >= current_start,
-                OrderDB.status == 'pending'
-            )
-        )
-    )
-    pending_count = pending_count_result.scalar() or 0
+    counts_res = await db.execute(stmt)
+    counts_row = counts_res.one()
+    
+    order_count = counts_row[0] or 0
+    pending_count = counts_row[1] or 0
+    delivered_count = counts_row[2] or 0
+    returned_count = counts_row[3] or 0
     
     # Inventory value
     inventory_value_result = await db.execute(
@@ -1103,38 +1214,144 @@ async def get_dashboard_stats(
         
         "orders_count": order_count,
         "orders_pending": pending_count,
-        "orders_fulfilled": 0, # Placeholder or implement query
-        "orders_returned": 0, # Placeholder or implement query
+        "orders_delivered": delivered_count,
+        "orders_returned": returned_count,
         
         "inventory_value": float(inventory_value),
         "low_stock_count": low_stock_count,
         "stockout_count": stockout_count
     }
 
+
+@api_router.get("/admin/notifications")
+async def get_notifications(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get admin notifications (Low Stock, New Orders, etc.)"""
+    notifications = []
+    
+    # 1. Low Stock Products
+    low_stock_res = await db.execute(
+        select(func.count()).select_from(ProductDB)
+        .where(ProductDB.stock_quantity <= ProductDB.low_stock_threshold)
+    )
+    low_stock_count = low_stock_res.scalar() or 0
+    
+    if low_stock_count > 0:
+        notifications.append({
+            "id": "low_stock",
+            "type": "warning",
+            "title": "Low Stock Alert",
+            "message": f"{low_stock_count} items are low on stock",
+            "time": "Just now",
+            "read": False
+        })
+        
+    # 2. Recent Orders (Last 24 hours)
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    last_24h = now - timedelta(hours=24)
+    
+    recent_orders_res = await db.execute(
+        select(func.count()).select_from(OrderDB)
+        .where(OrderDB.created_at >= last_24h)
+    )
+    recent_orders_count = recent_orders_res.scalar() or 0
+    
+    if recent_orders_count > 0:
+        notifications.append({
+            "id": "new_orders",
+            "type": "info",
+            "title": "New Orders",
+            "message": f"{recent_orders_count} new orders in last 24h",
+            "time": "Recent",
+            "read": False
+        })
+        
+    # 3. Pending Orders (Total)
+    pending_orders_res = await db.execute(
+        select(func.count()).select_from(OrderDB)
+        .where(OrderDB.status == 'pending')
+    )
+    pending_orders_count = pending_orders_res.scalar() or 0
+    
+    if pending_orders_count > 0:
+        notifications.append({
+            "id": "pending_orders",
+            "type": "info",
+            "title": "Pending Processing",
+            "message": f"{pending_orders_count} orders are pending",
+            "time": "Current",
+            "read": False
+        })
+
+    return notifications
+    
+
 @api_router.get("/admin/analytics/sales")
 async def get_sales_analytics(
-    days: int = 7,
+    period: str = "7d",
+    days: int = 7,  # Kept for backward compatibility
+    channel: str = None,
+    start_date: str = None,
+    end_date: str = None,
     owner: UserDB = Depends(get_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """Get sales trend data"""
     from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
     
-    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+    # Determine start_date based on period/custom
+    if period == 'custom' and start_date and end_date:
+        try:
+            dt_start = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+            # For charts, we just need the start date, but maybe we want to filter up to end_date too?
+            # The current chart logic groups by day > start_date.
+            query_start = dt_start
+            # If we want to strictly filter upper bound, we'd need to add where(created_at <= end_date)
+            # For now let's just set the lower bound correctly
+        except ValueError:
+             query_start = now - timedelta(days=days)
+    elif period == 'today':
+            import pytz
+            ist = pytz.timezone('Asia/Kolkata')
+            now_ist = datetime.now(ist)
+            today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+            query_start = today_start_ist.astimezone(timezone.utc)
+    else:
+        # standard days (7d, 30d)
+        # If period is passed, map it, otherwise fallback to days param
+        days_map = {"7d": 7, "30d": 30, "90d": 90}
+        d = days_map.get(period, days)
+        query_start = now - timedelta(days=d)
+
+    # Build query
+    from sqlalchemy import case, Date
+    stmt = select(
+        func.cast(OrderDB.created_at, Date).label('date'),
+        func.sum(case((OrderDB.payment_status == 'paid', OrderDB.grand_total), else_=0)).label('sales'),
+        func.sum(case((OrderDB.payment_status == 'paid', OrderDB.gross_profit), else_=0)).label('profit')
+    ).where(OrderDB.created_at >= query_start)
     
+    if period == 'custom' and end_date:
+        try:
+             dt_end = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+             stmt = stmt.where(OrderDB.created_at <= dt_end)
+        except: pass
+    
+    if channel:
+        if channel == 'online':
+            stmt = stmt.where(OrderDB.channel == 'online')
+        else: # pos / main store
+            stmt = stmt.where(OrderDB.channel != 'online')
+
     # Get daily sales
-    # Get daily sales
-    # Use text() for GROUP BY to avoid SQLAlchemy/Postgres expression matching issues
-    from sqlalchemy import text
+    # Group by the date directly
     result = await db.execute(
-        select(
-            func.date_trunc('day', OrderDB.created_at).label('date'),
-            func.sum(OrderDB.grand_total).label('sales'),
-            func.sum(OrderDB.gross_profit).label('profit')
-        )
-        .where(OrderDB.created_at >= start_date)
-        .group_by(text('date'))
-        .order_by(text('date'))
+        stmt.group_by(func.cast(OrderDB.created_at, Date))
+        .order_by(func.cast(OrderDB.created_at, Date))
     )
     
     data = [
@@ -1148,46 +1365,159 @@ async def get_sales_analytics(
     
     return data
 
+    return data
+
+@api_router.get("/admin/analytics/sales-by-channel")
+async def get_sales_by_channel(
+    days: int = 7,  
+    start_date: str = None,
+    end_date: str = None,
+    channel: str = None, # ignored but kept for compatibility
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get sales breakdown by channel"""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import case, func
+    
+    current_start = datetime.now(timezone.utc) - timedelta(days=days)
+    
+    # Custom dates
+    if start_date:
+        try:
+            current_start = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        except: pass
+            
+    stmt = select(
+        OrderDB.channel,
+        func.count(OrderDB.id).label('orders'),
+        func.sum(case((OrderDB.payment_status == 'paid', OrderDB.grand_total), else_=0)).label('sales'),
+        func.sum(case((OrderDB.payment_status == 'paid', OrderDB.gross_profit), else_=0)).label('profit')
+    ).where(OrderDB.created_at >= current_start)
+    
+    result = await db.execute(stmt.group_by(OrderDB.channel))
+    rows = result.all()
+    
+    # Process results
+    data = []
+    channel_map = {
+        'online': 'Online Store',
+        'pos': 'In-Store (POS)',
+        'wholesale': 'Wholesale'
+    }
+    
+    for row in rows:
+        channel_code = row.channel or 'unknown'
+        data.append({
+            "channel": channel_code,
+            "label": channel_map.get(channel_code, channel_code.title()),
+            "orders": row.orders,
+            "sales": float(row.sales or 0),
+            "profit": float(row.profit or 0)
+        })
+        
+    return data
+
 @api_router.get("/admin/analytics/top-products")
 async def get_top_products(
     days: int = 7,
+    channel: str = None,
+    start_date: str = None,
+    end_date: str = None,
     owner: UserDB = Depends(get_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """Get top selling products"""
     from datetime import datetime, timedelta, timezone
     
-    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+    # Date logic to match get_dashboard_stats
+    current_start = datetime.now(timezone.utc) - timedelta(days=days)
     
+    # Custom range override
+    if start_date and end_date:
+        try:
+            current_start = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+            # end_date is usually inclusive of the day, so we might want to go to end of that day
+            # relying on frontend or just taking date.
+        except Exception:
+            pass # fallback to days
+
+    stmt = select(OrderDB).where(OrderDB.created_at >= current_start)
+    
+    if channel:
+        if channel == 'online':
+            stmt = stmt.where(OrderDB.channel == 'online')
+        else: # pos / main store
+            stmt = stmt.where(OrderDB.channel != 'online')
+
     # Query orders and extract product info from items JSONB
-    result = await db.execute(
-        select(OrderDB)
-        .where(OrderDB.created_at >= start_date)
-    )
+    result = await db.execute(stmt)
     orders = result.scalars().all()
     
     # Aggregate product sales
     product_sales = {}
+    
+    # Need to fetch costs for accurate profit calculation
+    # Only fetch products that have been sold to avoid fetching entire DB
+    # Optimized: Fetch standard cost for all products first (caching strategy)
+    # OR: Just trust product snapshots in items if we added cost there.
+    # Checking `place_order`: we only added id, name, quantity, price, image, category. 
+    # We DID NOT add cost to the item snapshot.
+    # So we must fetch current product cost from DB.
+    
+    # 1. Collect all product IDs first
+    product_ids = set()
+    for order in orders:
+        if order.items:
+            for item in order.items:
+                pid = item.get('id') or item.get('productId')
+                if pid:
+                    product_ids.add(pid)
+    
+    # 2. Fetch costs
+    product_costs = {}
+    if product_ids:
+        # Convert IDs to UUIDs if needed, assuming they are stored as strings in items JSON
+        try:
+             import uuid as uuid_lib
+             ids_as_uuid = [uuid_lib.UUID(pid) for pid in product_ids]
+             prod_res = await db.execute(select(ProductDB).where(ProductDB.id.in_(ids_as_uuid)))
+             products = prod_res.scalars().all()
+             product_costs = {str(p.id): float(p.total_cost or 0) for p in products}
+        except Exception as e:
+             logging.error(f"Error fetching product costs: {e}")
+    
     for order in orders:
         if order.items:
             for item in order.items:
                 product_id = item.get('id') or item.get('productId')
-                if product_id:
-                    if product_id not in product_sales:
-                        product_sales[product_id] = {
-                            "name": item.get('name', 'Unknown'),
+                name = item.get('name', 'Unknown')
+                
+                if name:
+                    if name not in product_sales:
+                        product_sales[name] = {
+                            "name": name,
                             "quantity": 0,
-                            "revenue": 0
+                            "revenue": 0,
+                            "profit": 0,
+                            # Keep one ID for reference, though it might be mixed
+                            "id": product_id 
                         }
                     quantity = item.get('quantity', 1)
                     price = item.get('price', 0)
-                    product_sales[product_id]["quantity"] += quantity
-                    product_sales[product_id]["revenue"] += quantity * price
+                    cost = product_costs.get(product_id, 0)
+                    
+                    revenue = quantity * price
+                    profit = revenue - (cost * quantity)
+                    
+                    product_sales[name]["quantity"] += quantity
+                    product_sales[name]["revenue"] += revenue
+                    product_sales[name]["profit"] += profit
     
-    # Sort by quantity and return top 10
+    # Sort by profit (since the UI title is "Top Products by Profit")
     top_products = sorted(
-        [{"id": k, **v} for k, v in product_sales.items()],
-        key=lambda x: x["quantity"],
+        [{"id": v["id"], **v} for k, v in product_sales.items()],
+        key=lambda x: x["profit"],
         reverse=True
     )[:10]
     
@@ -1210,8 +1540,8 @@ async def get_low_stock_items(
     return [{
         "id": str(p.id),
         "sku": p.sku,
-        "name": p.name,
-        "stockQuantity": p.stock_quantity,
+        "product_name": p.name,
+        "available": p.stock_quantity,
         "lowStockThreshold": p.low_stock_threshold,
         "category": p.category
     } for p in products]
@@ -1315,6 +1645,14 @@ class VendorCreate(BaseModel):
     code: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    contact_person: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    gst_number: Optional[str] = None
+    payment_terms: Optional[str] = None
+    lead_time_days: Optional[int] = 0
 
 @api_router.post("/admin/products/import")
 async def import_products(
@@ -1601,6 +1939,21 @@ async def get_products(
     stmt = select(ProductDB).order_by(ProductDB.created_at.desc())
     result = await db.execute(stmt)
     products = result.scalars().all()
+
+    # Calculate reserved quantities from pending/processing orders
+    reserved_map = {}
+    stmt_orders = select(OrderDB).where(OrderDB.status.in_(['pending', 'processing']))
+    result_orders = await db.execute(stmt_orders)
+    active_orders = result_orders.scalars().all()
+    
+    for order in active_orders:
+        if order.items:
+            for item in order.items:
+                # item is a dict stored in JSON column
+                pid = item.get('id') 
+                qty = int(item.get('quantity', 0))
+                if pid:
+                    reserved_map[str(pid)] = reserved_map.get(str(pid), 0) + qty
     
     return [
         {
@@ -1634,6 +1987,8 @@ async def get_products(
             "profitMargin": float(p.profit_margin) if p.profit_margin else 0.0,
             "marginPercent": float(p.margin_percent) if p.margin_percent else 0.0,
             "stockQuantity": p.stock_quantity,
+            "reserved": reserved_map.get(str(p.id), 0),
+            "onHand": p.stock_quantity + reserved_map.get(str(p.id), 0),
             "lowStockThreshold": p.low_stock_threshold,
             "inStock": p.in_stock,
             "vendorName": p.vendor_name,
@@ -1831,8 +2186,41 @@ async def get_vendors(
         "code": v.code,
         "email": v.email,
         "phone": v.phone,
+        "contact_person": v.contact_person,
+        "address": v.address,
+        "payment_terms": v.payment_terms,
+        "lead_time_days": v.lead_time_days,
+        "contacts": [{"name": v.contact_person, "email": v.email, "phone": v.phone}] if v.contact_person else [],
         "isActive": v.is_active
     } for v in vendors]
+
+@api_router.get("/admin/vendors/{vendor_id}")
+async def get_vendor(
+    vendor_id: str,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get vendor by ID"""
+    stmt = select(VendorDB).where(VendorDB.id == vendor_id)
+    result = await db.execute(stmt)
+    v = result.scalar_one_or_none()
+    
+    if not v:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+        
+    return {
+        "id": v.id,
+        "name": v.name,
+        "code": v.code,
+        "email": v.email,
+        "phone": v.phone,
+        "contact_person": v.contact_person,
+        "address": v.address,
+        "gst_number": v.gst_number,
+        "payment_terms": v.payment_terms,
+        "lead_time_days": v.lead_time_days,
+        "isActive": v.is_active
+    }
 
 @api_router.post("/admin/vendors")
 async def create_vendor(
@@ -1843,12 +2231,24 @@ async def create_vendor(
     """Create new vendor"""
     import uuid as uuid_lib
     import random
+    
+    # Combine address
+    full_address = vendor_data.address or ""
+    if vendor_data.city: full_address += f", {vendor_data.city}"
+    if vendor_data.state: full_address += f", {vendor_data.state}"
+    if vendor_data.pincode: full_address += f" - {vendor_data.pincode}"
+    
     new_vendor = VendorDB(
         id=str(uuid_lib.uuid4()),
         name=vendor_data.name,
         code=vendor_data.code or f"VND-{random.randint(100, 999)}",
         email=vendor_data.email,
         phone=vendor_data.phone,
+        contact_person=vendor_data.contact_person,
+        address=full_address.strip(", -"),
+        gst_number=vendor_data.gst_number,
+        payment_terms=vendor_data.payment_terms,
+        lead_time_days=vendor_data.lead_time_days,
         is_active=True
     )
     
@@ -2102,6 +2502,8 @@ class OrderCreate(BaseModel):
     shippingAddress: Address
     paymentMethod: str
     couponCode: Optional[str] = None
+    idempotencyKey: Optional[str] = None
+    sessionId: Optional[str] = None
 
 # Using existing send_email function for consistency
 # async def send_email_background(to_email: str, subject: str, body: str):
@@ -2110,13 +2512,22 @@ class OrderCreate(BaseModel):
 
 @api_router.get("/admin/orders")
 async def get_admin_orders(
+    status: str = None,
     owner: UserDB = Depends(get_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """Get all orders for admin dashboard"""
-    result = await db.execute(
-        select(OrderDB).order_by(OrderDB.created_at.desc())
-    )
+    stmt = select(OrderDB).order_by(OrderDB.created_at.desc())
+    
+    if status and status != 'all':
+        if status == 'paid':
+            stmt = stmt.where(OrderDB.payment_status == 'paid')
+        elif status == 'pending':
+            stmt = stmt.where(OrderDB.payment_status == 'pending')
+        else:
+            stmt = stmt.where(OrderDB.status == status)
+
+    result = await db.execute(stmt)
     orders = result.scalars().all()
     
     return [
@@ -2184,10 +2595,213 @@ async def update_order_status(
         raise HTTPException(status_code=404, detail="Order not found")
         
     if "status" in status_data:
-        order.status = status_data["status"]
+        new_status = status_data["status"]
+        order.status = new_status
         
+        # Auto-update payment status for logical consistency
+        if new_status in ['delivered', 'paid']:
+            order.payment_status = 'paid'
+        elif new_status == 'pending':
+            order.payment_status = 'pending'
+            
     await db.commit()
     return {"success": True, "status": order.status}
+
+class CreateOrderLineItem(BaseModel):
+    product_id: str
+    quantity: int
+
+class CreateOrderAddress(BaseModel):
+    firstName: str
+    lastName: str = ""
+    address: str
+    city: str
+    state: str
+    pincode: str
+    country: str = "India"
+
+class CreateOrderRequest(BaseModel):
+    customer_name: str
+    customer_email: str
+    items: List[CreateOrderLineItem]
+    payment_status: str = 'pending' # paid, pending
+    fulfillment_status: str = 'pending' # pending, shipped, delivered
+    channel: str = 'pos' # online, pos
+    discount_amount: float = 0.0
+    coupon_code: Optional[str] = None
+    payment_method: Optional[str] = None # cash, card, upi
+    shipping_address: Optional[CreateOrderAddress] = None
+
+@api_router.post("/admin/orders/create")
+async def create_manual_order(
+    order_data: CreateOrderRequest,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Manually create an order from admin panel"""
+    import uuid
+    
+    # Generate Order Number early
+    order_number = f"ORD-{uuid.uuid4().hex[:8].upper()}"
+    
+    # 1. Get or Create Customer
+    # For manual orders, we might not want to enforce full auth user creation if it's just a walk-in,
+    # but maintaining a user record is good for history.
+    # Let's check if user exists by email
+    stmt = select(UserDB).where(UserDB.email == order_data.customer_email)
+    result = await db.execute(stmt)
+    customer = result.scalar_one_or_none()
+    
+    if not customer:
+        # Create a "guest" or implicit customer
+        customer = UserDB(
+            id=uuid.uuid4(),
+            email=order_data.customer_email,
+            full_name=order_data.customer_name,
+            role="customer",
+            password_hash=pwd_context.hash("manual_order_guest")
+        )
+        db.add(customer)
+        await db.flush() # get ID
+        
+    # 2. Process Items & Deduct Stock
+    line_items = []
+    subtotal = 0
+    total_cost = 0
+    
+    for item in order_data.items:
+        # Fetch product
+        prod_result = await db.execute(select(ProductDB).where(ProductDB.id == item.product_id))
+        product = prod_result.scalar_one_or_none()
+        
+        if not product:
+            raise HTTPException(status_code=400, detail=f"Product {item.product_id} not found")
+            
+        if product.stock_quantity < item.quantity:
+             raise HTTPException(status_code=400, detail=f"Insufficient stock for {product.name}")
+             
+        # Deduct stock
+        qty_change = -item.quantity
+        product.stock_quantity += qty_change
+        
+        # Log to Ledger
+        ledger_entry = InventoryLedgerDB(
+            product_id=str(product.id),
+            sku=product.sku,
+            product_name=product.name,
+            event_type='sale',
+            quantity_change=qty_change,
+            running_balance=product.stock_quantity,
+            reference_id=order_number,
+            reference_type='order',
+            notes=f"Admin Order Placed by {owner.full_name}",
+            created_by=owner.full_name
+        )
+        db.add(ledger_entry)
+        
+        # Calculate financials
+        price = float(product.price)
+        cost = float(product.total_cost or 0)
+        line_total = price * item.quantity
+        
+        subtotal += line_total
+        total_cost += (cost * item.quantity)
+        
+        line_items.append({
+            "id": str(product.id),
+            "name": product.name,
+            "sku": product.sku,
+            "price": price,
+            "quantity": item.quantity,
+            "image": product.images[0] if product.images else None
+        })
+        
+    # 3. Create Order
+    # Apply discount
+    discount = order_data.discount_amount
+    grand_total = max(0, subtotal - discount)
+    gross_profit = grand_total - total_cost
+    
+    # Generate Order Number (Already generated at top)
+    from datetime import datetime
+    
+    # Prepare shipping address dict if provided
+    shipping_addr_dict = order_data.shipping_address.dict() if order_data.shipping_address else None
+
+    new_order = OrderDB(
+        id=uuid.uuid4(),
+        order_number=order_number,
+        channel=order_data.channel,
+        customer_id=str(customer.id),
+        customer_name=order_data.customer_name,
+        customer_email=order_data.customer_email,
+        items=line_items,
+        subtotal=subtotal,
+        discount_total=discount,
+        coupon_code=order_data.coupon_code,
+        coupon_discount=discount,
+        grand_total=grand_total,
+        total_cost=total_cost,
+        gross_profit=gross_profit,
+        status=order_data.fulfillment_status,
+        payment_status=order_data.payment_status,
+        payment_method=order_data.payment_method,
+        fulfillment_status=order_data.fulfillment_status,
+        shipping_address=shipping_addr_dict,
+        created_at=datetime.utcnow()
+    )
+    
+    db.add(new_order)
+    await db.commit()
+    await db.refresh(new_order)
+    
+    return {"success": True, "order_id": str(new_order.id), "order_number": new_order.order_number}
+
+@api_router.post("/orders/{order_id}/cancel")
+async def cancel_order(
+    order_id: str,
+    # User authentication is tricky here if we don't have user dependency on the router level,
+    # but the frontend sends headers. For public endpoints, we might need `get_current_user`.
+    # Assuming this is customer facing, we should verify the user owns the order.
+    # But for quick fix to match the frontend call:
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Cancel an order"""
+    # include items relationship to restore stock
+    result = await db.execute(
+        select(OrderDB).where(OrderDB.id == order_id)
+    )
+    order = result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    # Verify ownership (if user is not admin)
+    if order.customer_email != current_user.email:
+         # In a real app we'd check ID, but here email is safer if IDs vary
+         # Or check if current_user.role is admin
+         if current_user.role != 'owner':
+             raise HTTPException(status_code=403, detail="Not authorized to cancel this order")
+
+    if order.status not in ['pending', 'processing', 'unpaid', 'placed']:
+        raise HTTPException(status_code=400, detail="Cannot cancel order in current status")
+        
+    # Restore stock
+    if order.items:
+        for item in order.items:
+             # Find product
+             prod_result = await db.execute(select(ProductDB).where(ProductDB.id == item["id"]))
+             product = prod_result.scalar_one_or_none()
+             if product:
+                 product.stock_quantity += item["quantity"]
+                 # Re-enable in_stock if it was 0
+                 if product.stock_quantity > 0:
+                     product.in_stock = True
+    
+    order.status = 'cancelled'
+    await db.commit()
+    return {"success": True, "status": "cancelled"}
 
 @api_router.post("/orders")
 async def place_order(
@@ -2196,28 +2810,59 @@ async def place_order(
     current_user: UserDB = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Place a new order"""
+    """Place a new order with atomic inventory locking"""
     try:
         import uuid as uuid_lib
-        from datetime import datetime
+        from datetime import datetime, timezone
+        from sqlalchemy import or_
+        now = datetime.now(timezone.utc)
         
-        # 1. Calculate totals and validate stock
+        # 0. Idempotency Check
+        if order_data.idempotencyKey:
+            existing_res = await db.execute(select(OrderDB).where(OrderDB.idempotency_key == order_data.idempotencyKey))
+            existing_order = existing_res.scalar_one_or_none()
+            if existing_order:
+                return {
+                    "success": True, 
+                    "message": "Order already processed (Idempotent)",
+                    "order_number": existing_order.order_number,
+                    "id": str(existing_order.id)
+                }
+
+        order_number = f"ORD-{uuid_lib.uuid4().hex[:8].upper()}"
+
+        # 1. Atomic Inventory Check & Lock
+        sorted_items = sorted(order_data.items, key=lambda x: x.productId)
+        
         total_amount = 0
         total_cost = 0
         items_json = []
         
-        for item in order_data.items:
-            # Fetch product
-            result = await db.execute(select(ProductDB).where(ProductDB.id == item.productId))
+        for item in sorted_items:
+            # Atomic Lock
+            stmt = select(ProductDB).where(ProductDB.id == item.productId).with_for_update()
+            result = await db.execute(stmt)
             product = result.scalar_one_or_none()
             
             if not product:
                 raise HTTPException(status_code=404, detail=f"Product {item.productId} not found")
                 
+            # A. Stock Check
             if product.stock_quantity < item.quantity:
-                raise HTTPException(status_code=400, detail=f"Insufficient stock for {product.name}")
-                
-            # Calculate price
+                raise HTTPException(status_code=409, detail=f"Insufficient stock for {product.name}")
+            
+            # B. Status Check
+            if product.status != 'active':
+                 raise HTTPException(status_code=409, detail=f"Product {product.name} is not available")
+                 
+            # C. Reservation Check
+            if product.reserved_until and product.reserved_until > now:
+                # Strictly check session ownership if reservation exists
+                session_match = (order_data.sessionId and product.reserved_by == order_data.sessionId)
+                if not session_match:
+                     raise HTTPException(status_code=409, detail=f"{product.name} is reserved by another user")
+            
+            # Update Totals
             item_total = float(product.selling_price) * item.quantity
             total_amount += item_total
             if product.total_cost:
@@ -2232,12 +2877,30 @@ async def place_order(
                 "category": product.category
             })
             
-            # Decrement stock
-            product.stock_quantity -= item.quantity
+            # Deduct Stock
+            qty_change = -item.quantity
+            product.stock_quantity += qty_change
+            
+            # Clear Reservation
+            product.reserved_until = None
+            product.reserved_by = None
+            
+            # Log to Ledger
+            ledger_entry = InventoryLedgerDB(
+                product_id=str(product.id),
+                sku=product.sku,
+                product_name=product.name,
+                event_type='sale',
+                quantity_change=qty_change,
+                running_balance=product.stock_quantity,
+                reference_id=order_number,
+                reference_type='order',
+                notes=f"Order Placed by {current_user.full_name}",
+                created_by=current_user.full_name
+            )
+            db.add(ledger_entry)
+
             if product.stock_quantity <= 0:
-                product.in_stock = False
-                
-        if product.stock_quantity <= 0:
                 product.in_stock = False
                 
         # 2. Apply Coupon
@@ -2245,7 +2908,6 @@ async def place_order(
         coupon = None
         
         if order_data.couponCode:
-            # Verify coupon again for security
             result = await db.execute(
                 select(CouponDB).where(
                     CouponDB.code == order_data.couponCode.upper(),
@@ -2255,7 +2917,6 @@ async def place_order(
             coupon = result.scalar_one_or_none()
             
             if coupon:
-                # Check constraints
                 if total_amount >= float(coupon.min_order_value):
                     if coupon.type == 'percent':
                         calc_discount = (total_amount * float(coupon.value)) / 100
@@ -2265,28 +2926,21 @@ async def place_order(
                     else:
                         discount_amount = float(coupon.value)
                     
-                    # Cap at total amount
                     if discount_amount > total_amount:
                         discount_amount = total_amount
                         
-                    # Increment usage
                     coupon.usage_count += 1
         
         # 3. Create Order
         shipping_cost = 0 if total_amount > 5000 else 100
         
-        # Final calculation
-        tax_total = float(total_amount - discount_amount) * 0.03 # Est 3% Tax
+        tax_total = float(total_amount - discount_amount) * 0.03
         grand_total = float(total_amount - discount_amount) + shipping_cost
-        
-        # Generate Order Number
-        
-        # Generate Order Number
-        order_number = f"ORD-{uuid_lib.uuid4().hex[:8].upper()}"
         
         new_order = OrderDB(
             id=uuid_lib.uuid4(),
             order_number=order_number,
+            idempotency_key=order_data.idempotencyKey,
             customer_id=str(current_user.id),
             customer_name=f"{order_data.shippingAddress.firstName} {order_data.shippingAddress.lastName}",
             customer_email=current_user.email,
@@ -2301,11 +2955,11 @@ async def place_order(
             coupon_discount=discount_amount if coupon else 0,
             
             total_cost=total_cost,
-            gross_profit=grand_total - total_cost, # Simplified
+            gross_profit=grand_total - total_cost,
             net_profit=grand_total - total_cost,
             
-            status="pending",
-            payment_status="pending", # COD
+            status="paid" if order_data.paymentMethod.lower() != 'cod' else "pending",
+            payment_status="paid" if order_data.paymentMethod.lower() != 'cod' else "pending",
             payment_method=order_data.paymentMethod,
             shipping_address=order_data.shippingAddress.dict(),
             
@@ -2465,8 +3119,415 @@ async def get_my_order_detail(
         "shippingAddress": order.shipping_address
     }
 
+# -------------------------------------------------------------------------
+# Inventory & Transfer Management (New)
+# -------------------------------------------------------------------------
+
+# Helper to log movement
+async def log_stock_movement(
+    db: AsyncSession,
+    product_id: str,
+    quantity_change: int,
+    event_type: str,
+    reference_id: str,
+    reference_type: str,
+    notes: str = None,
+    created_by: str = "System"
+):
+    # Fetch product to update stock and get balance
+    result = await db.execute(select(ProductDB).where(ProductDB.id == product_id))
+    product = result.scalar_one_or_none()
+    
+    if product:
+        # Update stock
+        product.stock_quantity = (product.stock_quantity or 0) + quantity_change
+        
+        # Log entry
+        entry = InventoryLedgerDB(
+            product_id=str(product.id),
+            sku=product.sku,
+            product_name=product.name,
+            event_type=event_type,
+            quantity_change=quantity_change,
+            running_balance=product.stock_quantity,
+            reference_id=reference_id,
+            reference_type=reference_type,
+            notes=notes,
+            created_by=created_by
+        )
+        db.add(entry)
+        # Note: We don't commit here to allow atomic transactions with the caller
+
+@api_router.get("/admin/inventory/ledger")
+async def get_inventory_ledger(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get inventory ledger history"""
+    stmt = select(InventoryLedgerDB).order_by(InventoryLedgerDB.created_at.desc()).limit(100)
+    result = await db.execute(stmt)
+    entries = result.scalars().all()
+    
+    return [
+        {
+            "id": str(e.id),
+            "product_name": e.product_name,
+            "sku": e.sku,
+            "event_type": e.event_type,
+            "qty_delta": e.quantity_change,
+            "qty_after": e.running_balance,
+            "reference": e.reference_id,
+            "note": e.notes,
+            "created_at": e.created_at.isoformat()
+        }
+        for e in entries
+    ]
+
+@api_router.post("/admin/inventory/adjust")
+async def adjust_inventory(
+    adjustment_data: dict = Body(...),
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Manual inventory adjustment"""
+    import uuid
+    product_id = adjustment_data.get('product_id')
+    new_quantity = int(adjustment_data.get('new_quantity'))
+    reason = adjustment_data.get('reason', 'Manual Adjustment')
+    notes = adjustment_data.get('notes')
+    
+    result = await db.execute(select(ProductDB).where(ProductDB.id == product_id))
+    product = result.scalar_one_or_none()
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+        
+    current_qty = product.stock_quantity or 0
+    delta = new_quantity - current_qty
+    
+    if delta == 0:
+        return {"message": "No change in quantity"}
+        
+    await log_stock_movement(
+        db, 
+        product_id, 
+        delta, 
+        'adjust', 
+        f"ADJ-{uuid.uuid4().hex[:6].upper()}", 
+        'manual', 
+        f"{reason}: {notes}" if notes else reason,
+        owner.full_name
+    )
+    
+    await db.commit()
+    return {"message": "Inventory adjusted successfully"}
+
+@api_router.get("/admin/locations")
+async def get_locations(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all locations"""
+    result = await db.execute(select(LocationDB).where(LocationDB.is_active == True))
+    locations = result.scalars().all()
+    return locations
+
+@api_router.post("/admin/locations")
+async def create_location(
+    location_data: dict = Body(...),
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new location"""
+    new_location = LocationDB(
+        name=location_data.get('name'),
+        type=location_data.get('type', 'store'),
+        address=location_data.get('address')
+    )
+    db.add(new_location)
+    await db.commit()
+    return new_location
+
+@api_router.get("/admin/transfers")
+async def get_transfers(
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all stock transfers"""
+    stmt = select(TransferDB).order_by(TransferDB.created_at.desc())
+    result = await db.execute(stmt)
+    transfers = result.scalars().all()
+    
+    loc_result = await db.execute(select(LocationDB))
+    locations = {str(l.id): l.name for l in loc_result.scalars().all()}
+    
+    return [
+        {
+            "id": t.transfer_number,
+            "uuid": str(t.id),
+            "from_location": locations.get(t.from_location_id, "Unknown"),
+            "to_location": locations.get(t.to_location_id, "Unknown"),
+            "from_location_id": t.from_location_id,
+            "to_location_id": t.to_location_id,
+            "items_count": t.items_count,
+            "items": t.items,
+            "status": t.status,
+            "created_at": t.created_at.isoformat()
+        }
+        for t in transfers
+    ]
+
+@api_router.post("/admin/transfers")
+async def create_transfer(
+    transfer_data: dict = Body(...),
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new transfer"""
+    import random
+    import string
+    suffix = ''.join(random.choices(string.digits, k=6))
+    trf_id = f"TRF-{suffix}"
+    
+    items = transfer_data.get('items', [])
+    items_count = sum(int(item.get('quantity', 0)) for item in items)
+    
+    # Log stock movements (Net zero change to global stock, but records history)
+    for item in items:
+        p_id = item.get('product_id')
+        qty = int(item.get('quantity', 0))
+        if p_id and qty > 0:
+             # Out from Source
+             await log_stock_movement(
+                 db, p_id, -qty, 'transfer_out', trf_id, 'transfer', 
+                 f"Transfer to {transfer_data.get('toLocationId')}", owner.full_name
+             )
+             # In to Dest
+             await log_stock_movement(
+                 db, p_id, qty, 'transfer_in', trf_id, 'transfer', 
+                 f"Transfer from {transfer_data.get('fromLocationId')}", owner.full_name
+             )
+
+    new_transfer = TransferDB(
+        transfer_number=trf_id,
+        from_location_id=transfer_data.get('fromLocationId'),
+        to_location_id=transfer_data.get('toLocationId'),
+        status='pending',
+        items=items,
+        items_count=items_count,
+        notes=transfer_data.get('notes'),
+        created_by=owner.full_name
+    )
+    
+    db.add(new_transfer)
+    await db.commit()
+    return {"message": "Transfer created", "id": trf_id}
+
+@api_router.put("/admin/transfers/{transfer_id}/status")
+async def update_transfer_status(
+    transfer_id: str,
+    status_data: dict = Body(...),
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update transfer status"""
+    stmt = select(TransferDB).where(TransferDB.transfer_number == transfer_id)
+    result = await db.execute(stmt)
+    transfer = result.scalar_one_or_none()
+    
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+        
+    transfer.status = status_data.get('status')
+    await db.commit()
+    return {"message": "Status updated"}
+
+# ============================================
+# PURCHASE ORDERS
+# ============================================
+
+class POItem(BaseModel):
+    productId: str
+    sku: str
+    name: str
+    quantity: int
+    unitCost: float
+
+class POCreate(BaseModel):
+    vendorId: str
+    items: List[POItem]
+    notes: Optional[str] = None
+    expectedDate: Optional[str] = None
+
+@api_router.get("/admin/purchase-orders")
+async def get_purchase_orders(
+    status: Optional[str] = None,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(PurchaseOrderDB).order_by(PurchaseOrderDB.created_at.desc())
+    if status and status != 'all':
+        stmt = stmt.where(PurchaseOrderDB.status == status)
+    
+    result = await db.execute(stmt)
+    pos = result.scalars().all()
+    
+    return [{
+        "id": str(po.id),
+        "po_number": po.po_number,
+        "vendor_name": po.vendor_name,
+        "status": po.status,
+        "total_amount": float(po.total_amount) if po.total_amount else 0,
+        "items_count": po.items_count,
+        "received_count": po.received_count,
+        "created_at": po.created_at.isoformat(),
+        "expected_date": po.expected_date.isoformat() if po.expected_date else None
+    } for po in pos]
+
+@api_router.post("/admin/purchase-orders")
+async def create_purchase_order(
+    po_data: POCreate,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    import uuid as uuid_lib
+    import random
+    from datetime import datetime
+    
+    # Verify vendor
+    res = await db.execute(select(VendorDB).where(VendorDB.id == po_data.vendorId))
+    vendor = res.scalar_one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+        
+    # Calculate totals
+    total_amount = 0
+    total_items = 0
+    items_json = []
+    
+    for item in po_data.items:
+        cost = item.quantity * item.unitCost
+        total_amount += cost
+        total_items += item.quantity
+        items_json.append({
+            "product_id": item.productId,
+            "sku": item.sku,
+            "name": item.name,
+            "quantity": item.quantity,
+            "unit_cost": item.unitCost,
+            "total_cost": cost,
+            "received_qty": 0
+        })
+        
+    # Generate PO Number
+    year = datetime.now().year
+    po_number = f"PO-{year}-{random.randint(1000, 9999)}"
+    
+    # Parse date
+    exp_date = None
+    if po_data.expectedDate:
+        try:
+            exp_date = datetime.fromisoformat(po_data.expectedDate.replace('Z', '+00:00'))
+        except:
+            pass
+
+    new_po = PurchaseOrderDB(
+        id=uuid_lib.uuid4(),
+        po_number=po_number,
+        vendor_id=vendor.id,
+        vendor_name=vendor.name,
+        status="ordered",
+        total_amount=total_amount,
+        items_count=total_items,
+        items=items_json,
+        notes=po_data.notes,
+        expected_date=exp_date
+    )
+    
+    db.add(new_po)
+    await db.commit()
+    return {"success": True, "id": str(new_po.id), "po_number": po_number}
+
 app.include_router(api_router)
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+# ============================================
+# INVENTORY RESERVATION SYSTEM
+# ============================================
+
+class ReservationRequest(BaseModel):
+    product_id: str
+    session_id: str
+
+@api_router.post("/cart/reserve")
+async def reserve_product(data: ReservationRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Atomically reserve a product for 5 minutes.
+    Prevents race conditions using specific row locking.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    
+    try:
+        # Atomic Lock: Select for update
+        stmt = select(ProductDB).where(ProductDB.id == data.product_id).with_for_update()
+        result = await db.execute(stmt)
+        product = result.scalar_one_or_none()
+        
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+        
+        # 1. Check if physically out of stock
+        if product.stock_quantity <= 0 or product.status != 'active':
+            return JSONResponse(
+                status_code=409, 
+                content={"success": False, "message": "Product is sold out"}
+            )
+            
+        # 2. Check if reserved by someone else
+        # Active reservation = (reserved_until > now) AND (reserved_by != this_session)
+        if product.reserved_until and product.reserved_until > now and product.reserved_by != data.session_id:
+            return JSONResponse(
+                status_code=409, 
+                content={"success": False, "message": "Product is currently reserved by another customer"}
+            )
+            
+        # 3. Apply Reservation
+        expiry = now + timedelta(minutes=5)
+        product.reserved_until = expiry
+        product.reserved_by = data.session_id
+        
+        await db.commit()
+        
+        return {
+            "success": True,
+            "message": "Product reserved",
+            "reserved_until": expiry.isoformat()
+        }
+        
+    except Exception as e:
+        await db.rollback()
+        # logger.error(f"Reservation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/cart/release")
+async def release_product(data: ReservationRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Release a reservation manually (e.g., removed from cart)
+    """
+    try:
+        stmt = select(ProductDB).where(ProductDB.id == data.product_id).with_for_update()
+        result = await db.execute(stmt)
+        product = result.scalar_one_or_none()
+        
+        if product and product.reserved_by == data.session_id:
+            product.reserved_until = None
+            product.reserved_by = None
+            await db.commit()
+            
+        return {"success": True, "message": "Reservation released"}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))

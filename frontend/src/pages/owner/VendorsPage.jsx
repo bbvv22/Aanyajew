@@ -14,6 +14,7 @@ import {
     ChevronRight
 } from 'lucide-react';
 import { useOwner } from '../../context/OwnerContext';
+import CreateVendorModal from '../../components/admin/CreateVendorModal';
 
 const VendorsPage = () => {
     const { getAuthHeader, backendUrl } = useOwner();
@@ -36,39 +37,7 @@ const VendorsPage = () => {
             setVendors(response.data);
         } catch (error) {
             console.error('Error fetching vendors:', error);
-            // Mock data
-            setVendors([
-                {
-                    id: 'v-001',
-                    name: 'Shree Gold Suppliers',
-                    code: 'SGS',
-                    contacts: [{ name: 'Rajesh Kumar', phone: '+91 98765 43210', email: 'rajesh@shreegold.com' }],
-                    city: 'Mumbai',
-                    payment_terms: 'NET30',
-                    lead_time_days: 7,
-                    is_active: true
-                },
-                {
-                    id: 'v-002',
-                    name: 'Diamond World Trading',
-                    code: 'DWT',
-                    contacts: [{ name: 'Suresh Mehta', phone: '+91 87654 32109', email: 'suresh@diamondworld.com' }],
-                    city: 'Surat',
-                    payment_terms: 'COD',
-                    lead_time_days: 14,
-                    is_active: true
-                },
-                {
-                    id: 'v-003',
-                    name: 'Silver Craft India',
-                    code: 'SCI',
-                    contacts: [{ name: 'Priya Patel', phone: '+91 76543 21098', email: 'priya@silvercraft.in' }],
-                    city: 'Jaipur',
-                    payment_terms: 'NET15',
-                    lead_time_days: 5,
-                    is_active: true
-                }
-            ]);
+            setVendors([]);
         } finally {
             setLoading(false);
         }
@@ -204,6 +173,12 @@ const VendorsPage = () => {
                     </button>
                 </div>
             )}
+
+            <CreateVendorModal
+                isOpen={showAddModal}
+                onClose={() => setShowAddModal(false)}
+                onVendorCreated={fetchVendors}
+            />
         </div>
     );
 };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { CreditCard, Truck, Shield, Check } from "lucide-react";
+import { Link, useNavigate, useLocation } from "react-router-dom";
+import { CreditCard, Truck, Shield, Check, Clock, AlertTriangle } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { useCart } from "../context/CartContext";
@@ -8,10 +8,40 @@ import { useToast } from "../context/ToastContext";
 
 const CheckoutPage = () => {
     const navigate = useNavigate();
-    const { cartItems, getCartTotal, clearCart, isLoaded, coupon } = useCart();
+    const location = useLocation();
+    const expiryTimestamp = location.state?.reservationExpiry;
+    const [timeLeft, setTimeLeft] = useState(
+        expiryTimestamp ? Math.max(0, expiryTimestamp - Date.now()) : null
+    );
+
+    useEffect(() => {
+        if (expiryTimestamp) {
+            const interval = setInterval(() => {
+                const diff = expiryTimestamp - Date.now();
+                if (diff <= 0) {
+                    setTimeLeft(0);
+                    clearInterval(interval);
+                } else {
+                    setTimeLeft(diff);
+                }
+            }, 1000);
+            return () => clearInterval(interval);
+        }
+    }, [expiryTimestamp]);
+
+    const formatTime = (ms) => {
+        if (ms === null || ms < 0) return "00:00";
+        const totalSeconds = Math.floor(ms / 1000);
+        const m = Math.floor(totalSeconds / 60);
+        const s = totalSeconds % 60;
+        return `${m}:${s.toString().padStart(2, '0')}`;
+    };
+
+    const { cartItems, getCartTotal, clearCart, isLoaded, coupon, sessionId } = useCart();
     const { success, error: showError } = useToast();
     const [loading, setLoading] = useState(false);
     const [orderPlaced, setOrderPlaced] = useState(false);
+    const [idempotencyKey, setIdempotencyKey] = useState("");
     const [formData, setFormData] = useState({
         email: "",
         firstName: "",
@@ -25,6 +55,9 @@ const CheckoutPage = () => {
     });
 
     useEffect(() => {
+        // Generate Idempotency Key on mount
+        setIdempotencyKey(crypto.randomUUID());
+
         if (isLoaded && cartItems.length === 0 && !orderPlaced) {
             navigate("/cart");
         }
@@ -88,7 +121,9 @@ const CheckoutPage = () => {
                     phone: formData.phone
                 },
                 paymentMethod: "cod", // Cash on Delivery for now
-                couponCode: coupon?.code
+                couponCode: coupon?.code,
+                sessionId: sessionId,
+                idempotencyKey: idempotencyKey
             };
 
             const response = await fetch(`${backendUrl}/api/orders`, {
@@ -161,6 +196,24 @@ const CheckoutPage = () => {
                     </div>
                 </div>
             </div>
+
+            {/* Reservation Timer */}
+            {timeLeft !== null && (
+                <div className={`border-b ${timeLeft > 0 ? 'bg-blue-50 border-blue-100' : 'bg-red-50 border-red-100'}`}>
+                    <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-center gap-2">
+                        {timeLeft > 0 ? (
+                            <Clock className="h-4 w-4 text-blue-600" />
+                        ) : (
+                            <AlertTriangle className="h-4 w-4 text-red-600" />
+                        )}
+                        <p className={`text-sm font-medium ${timeLeft > 0 ? 'text-blue-800' : 'text-red-800'}`}>
+                            {timeLeft > 0
+                                ? `Items reserved for ${formatTime(timeLeft)}`
+                                : "Reservation expired. Please return to cart."}
+                        </p>
+                    </div>
+                </div>
+            )}
 
             <div className="max-w-7xl mx-auto px-4 py-8">
                 <form onSubmit={handleSubmit}>
@@ -362,8 +415,8 @@ const CheckoutPage = () => {
 
                                 <Button
                                     type="submit"
-                                    disabled={loading}
-                                    className="w-full py-6 mt-6 bg-[#c4ad94] hover:bg-[#b39d84] text-white text-lg"
+                                    disabled={loading || timeLeft === 0}
+                                    className="w-full py-6 mt-6 bg-[#c4ad94] hover:bg-[#b39d84] text-white text-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {loading ? "Processing..." : `Pay ₹${total.toLocaleString()}`}
                                 </Button>

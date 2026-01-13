@@ -9,61 +9,105 @@ import { useWishlist } from "../context/WishlistContext";
 import { useToast } from "../context/ToastContext";
 
 const ProductsPage = () => {
-    const [searchParams] = useSearchParams();
+    const [searchParams, setSearchParams] = useSearchParams();
     const { addToCart } = useCart();
     const { toggleWishlist, isInWishlist } = useWishlist();
     const { success } = useToast();
     const [products, setProducts] = useState([]);
+    const [categoryTree, setCategoryTree] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState(searchParams.get("search") || "");
     const [selectedCategory, setSelectedCategory] = useState("all");
+    const [selectedSubCategory, setSelectedSubCategory] = useState("all");
     const [showFilters, setShowFilters] = useState(false);
 
-    const categories = [
-        "all",
-        "Engagement Rings",
-        "Diamond Jewellery",
-        "Wedding Rings",
-        "Gold Jewellery",
-        "Silver Jewellery",
-    ];
-
-    // Update search term when URL changes
+    // Update search term and filters when URL changes
     useEffect(() => {
         const urlSearch = searchParams.get("search");
+        const urlCategory = searchParams.get("category");
+        const urlSubCategory = searchParams.get("subcategory");
+
         if (urlSearch) {
             setSearchTerm(urlSearch);
+            // Reset filters if searching
+            setSelectedCategory("all");
+            setSelectedSubCategory("all");
+        } else if (urlCategory) {
+            // Set filters from URL
+            setSearchTerm("");
+            setSelectedCategory(urlCategory);
+            if (urlSubCategory) {
+                setSelectedSubCategory(urlSubCategory);
+            } else {
+                setSelectedSubCategory("all");
+            }
         }
     }, [searchParams]);
 
     useEffect(() => {
-        const fetchProducts = async () => {
+        const fetchData = async () => {
             try {
                 const backendUrl = process.env.REACT_APP_BACKEND_URL || "http://localhost:8006";
-                const response = await axios.get(`${backendUrl}/api/products`);
-                setProducts(response.data);
+                // Fetch products and category tree in parallel
+                const [productsRes, treeRes] = await Promise.all([
+                    axios.get(`${backendUrl}/api/products`),
+                    axios.get(`${backendUrl}/api/navigation`)
+                ]);
+
+                setProducts(productsRes.data);
+
+                // Transform navigation structure (columns -> flat list) for sidebar
+                const navData = treeRes.data; // Now coming from /navigation
+                const formattedTree = navData.map(cat => ({
+                    name: cat.name,
+                    subcategories: cat.columns ? cat.columns.reduce((acc, col) => {
+                        const items = col.items || [];
+                        // Filter out 'All [Category Name]' items from sidebar filter to avoid redundancy
+                        const filteredItems = items.filter(item => !item.startsWith("All "));
+                        return [...acc, ...filteredItems];
+                    }, []) : []
+                }));
+                setCategoryTree(formattedTree);
             } catch (error) {
-                console.error("Error fetching products:", error);
+                console.error("Error fetching data:", error);
             } finally {
                 setLoading(false);
             }
         };
-        fetchProducts();
+        fetchData();
     }, []);
 
     const filteredProducts = products.filter((product) => {
-        // Split search term into words and check if ANY word matches
+        const normalize = (str) => (str || "").trim().toLowerCase();
+
+        // 1. Search Filter
         const searchWords = searchTerm.toLowerCase().split(/\s+/).filter(word => word.length > 0);
         const productName = product.name.toLowerCase();
         const productCategory = (product.category || "").toLowerCase();
+        const productSubcategory = (product.subcategory || "").toLowerCase();
 
-        // Match if any search word is found in name or category
         const matchesSearch = searchWords.length === 0 ||
-            searchWords.some(word => productName.includes(word) || productCategory.includes(word));
+            searchWords.some(word =>
+                productName.includes(word) ||
+                productCategory.includes(word) ||
+                productSubcategory.includes(word)
+            );
 
-        const matchesCategory = selectedCategory === "all" || product.category === selectedCategory;
-        return matchesSearch && matchesCategory;
+        // 2. Category Filter
+        const matchesCategory = selectedCategory === "all" ||
+            normalize(product.category) === normalize(selectedCategory);
+
+        // 3. Subcategory Filter
+        const matchesSubCategory = selectedSubCategory === "all" ||
+            normalize(product.subcategory) === normalize(selectedSubCategory);
+
+        return matchesSearch && matchesCategory && matchesSubCategory;
     });
+
+    // Helper to get subcategories for currently selected category
+    const currentSubCategories = selectedCategory !== "all"
+        ? categoryTree.find(c => (c.name || "").trim().toLowerCase() === selectedCategory.trim().toLowerCase())?.subcategories || []
+        : [];
 
     if (loading) {
         return (
@@ -75,7 +119,7 @@ const ProductsPage = () => {
 
     return (
         <div className="min-h-screen bg-gray-50">
-            {/* Hero Banner */}
+            {/* Hero and Search Bar ... (unchanged) */}
             <div className="bg-gradient-to-r from-[#c4ad94] to-[#b39d84] text-white py-16">
                 <div className="max-w-7xl mx-auto px-4 text-center">
                     <h1 className="text-4xl font-serif mb-4">Our Collection</h1>
@@ -123,20 +167,65 @@ const ProductsPage = () => {
                             <div className="mb-6">
                                 <h4 className="text-sm font-medium text-gray-700 mb-3">Category</h4>
                                 <div className="space-y-2">
-                                    {categories.map((category) => (
-                                        <label key={category} className="flex items-center gap-2 cursor-pointer">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input
+                                            type="radio"
+                                            name="category"
+                                            checked={selectedCategory === "all"}
+                                            onChange={() => {
+                                                setSearchParams({}); // Clear all params
+                                            }}
+                                            className="text-[#c4ad94] focus:ring-[#c4ad94]"
+                                        />
+                                        <span className="text-sm text-gray-600">All Categories</span>
+                                    </label>
+                                    {categoryTree.map((catWrapper) => (
+                                        <label key={catWrapper.name} className="flex items-center gap-2 cursor-pointer">
                                             <input
                                                 type="radio"
                                                 name="category"
-                                                checked={selectedCategory === category}
-                                                onChange={() => setSelectedCategory(category)}
+                                                checked={(selectedCategory || "").trim().toLowerCase() === (catWrapper.name || "").trim().toLowerCase()}
+                                                onChange={() => {
+                                                    setSearchParams({ category: catWrapper.name });
+                                                }}
                                                 className="text-[#c4ad94] focus:ring-[#c4ad94]"
                                             />
-                                            <span className="text-sm text-gray-600 capitalize">{category}</span>
+                                            <span className="text-sm text-gray-600 capitalize">{catWrapper.name}</span>
                                         </label>
                                     ))}
                                 </div>
                             </div>
+
+                            {/* Subcategory Filter - Only show if category is selected and has subcategories */}
+                            {currentSubCategories.length > 0 && (
+                                <div className="mb-6 pl-4 border-l-2 border-gray-100">
+                                    <h4 className="text-sm font-medium text-gray-700 mb-3">Sub-Category</h4>
+                                    <div className="space-y-2">
+                                        <label className="flex items-center gap-2 cursor-pointer">
+                                            <input
+                                                type="radio"
+                                                name="subcategory"
+                                                checked={selectedSubCategory === "all"}
+                                                onChange={() => setSearchParams({ category: selectedCategory })}
+                                                className="text-[#c4ad94] focus:ring-[#c4ad94]"
+                                            />
+                                            <span className="text-sm text-gray-600">All {selectedCategory}</span>
+                                        </label>
+                                        {currentSubCategories.map((sub) => (
+                                            <label key={sub} className="flex items-center gap-2 cursor-pointer">
+                                                <input
+                                                    type="radio"
+                                                    name="subcategory"
+                                                    checked={(selectedSubCategory || "").trim().toLowerCase() === (sub || "").trim().toLowerCase()}
+                                                    onChange={() => setSearchParams({ category: selectedCategory, subcategory: sub })}
+                                                    className="text-[#c4ad94] focus:ring-[#c4ad94]"
+                                                />
+                                                <span className="text-sm text-gray-600 capitalize">{sub}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             <Button
                                 variant="outline"

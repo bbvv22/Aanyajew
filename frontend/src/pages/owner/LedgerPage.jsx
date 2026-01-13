@@ -3,12 +3,14 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { ArrowLeft, Package, ArrowUpCircle, ArrowDownCircle, RefreshCw, Truck, Filter } from 'lucide-react';
 import { useOwner } from '../../context/OwnerContext';
+import CreateAdjustmentModal from '../../components/admin/CreateAdjustmentModal';
 
 const LedgerPage = () => {
     const { getAuthHeader, backendUrl } = useOwner();
     const [entries, setEntries] = useState([]);
     const [loading, setLoading] = useState(true);
     const [filterType, setFilterType] = useState('all');
+    const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
 
     useEffect(() => {
         fetchLedger();
@@ -22,75 +24,7 @@ const LedgerPage = () => {
             setEntries(response.data);
         } catch (error) {
             console.error('Error fetching ledger:', error);
-            // Mock data showing inventory history
-            setEntries([
-                {
-                    id: 'LED-001',
-                    product_name: 'Diamond Stud Earrings',
-                    sku: 'AJ-ER-0001',
-                    event_type: 'receive',
-                    qty_delta: 10,
-                    qty_after: 10,
-                    reference: 'PO-2024-001',
-                    note: 'Initial stock from Shree Gold Suppliers',
-                    created_at: new Date(Date.now() - 7 * 86400000).toISOString()
-                },
-                {
-                    id: 'LED-002',
-                    product_name: 'Diamond Stud Earrings',
-                    sku: 'AJ-ER-0001',
-                    event_type: 'sale',
-                    qty_delta: -2,
-                    qty_after: 8,
-                    reference: 'ORD-2024-0015',
-                    note: 'Sold to customer',
-                    created_at: new Date(Date.now() - 5 * 86400000).toISOString()
-                },
-                {
-                    id: 'LED-003',
-                    product_name: 'Gold Chain Necklace',
-                    sku: 'AJ-NC-0015',
-                    event_type: 'receive',
-                    qty_delta: 5,
-                    qty_after: 5,
-                    reference: 'PO-2024-002',
-                    note: 'Received from vendor',
-                    created_at: new Date(Date.now() - 3 * 86400000).toISOString()
-                },
-                {
-                    id: 'LED-004',
-                    product_name: 'Gold Chain Necklace',
-                    sku: 'AJ-NC-0015',
-                    event_type: 'sale',
-                    qty_delta: -2,
-                    qty_after: 3,
-                    reference: 'ORD-2024-0018',
-                    note: 'Online sale',
-                    created_at: new Date(Date.now() - 2 * 86400000).toISOString()
-                },
-                {
-                    id: 'LED-005',
-                    product_name: 'Ruby Pendant',
-                    sku: 'AJ-PD-0023',
-                    event_type: 'adjust',
-                    qty_delta: -1,
-                    qty_after: 0,
-                    reference: 'ADJ-001',
-                    note: 'Damaged item written off',
-                    created_at: new Date(Date.now() - 1 * 86400000).toISOString()
-                },
-                {
-                    id: 'LED-006',
-                    product_name: 'Silver Bangles Set',
-                    sku: 'AJ-BG-0042',
-                    event_type: 'transfer_in',
-                    qty_delta: 5,
-                    qty_after: 15,
-                    reference: 'TRF-001',
-                    note: 'Transfer from warehouse',
-                    created_at: new Date().toISOString()
-                }
-            ]);
+            setEntries([]);
         } finally {
             setLoading(false);
         }
@@ -157,21 +91,30 @@ const LedgerPage = () => {
                         <p className="text-gray-500 mt-1">Complete history of stock movements</p>
                     </div>
                 </div>
-                <div className="flex items-center gap-2">
-                    <Filter className="h-4 w-4 text-gray-400" />
-                    <select
-                        value={filterType}
-                        onChange={(e) => setFilterType(e.target.value)}
-                        className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                <div className="flex items-center gap-3">
+                    <button
+                        onClick={() => setIsAdjustModalOpen(true)}
+                        className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
                     >
-                        <option value="all">All Events</option>
-                        <option value="receive">Receives</option>
-                        <option value="sale">Sales</option>
-                        <option value="return">Returns</option>
-                        <option value="adjust">Adjustments</option>
-                        <option value="transfer_in">Transfers In</option>
-                        <option value="transfer_out">Transfers Out</option>
-                    </select>
+                        <RefreshCw className="h-4 w-4" />
+                        Adjust Stock
+                    </button>
+                    <div className="flex items-center gap-2">
+                        <Filter className="h-4 w-4 text-gray-400" />
+                        <select
+                            value={filterType}
+                            onChange={(e) => setFilterType(e.target.value)}
+                            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                        >
+                            <option value="all">All Events</option>
+                            <option value="receive">Receives</option>
+                            <option value="sale">Sales</option>
+                            <option value="return">Returns</option>
+                            <option value="adjust">Adjustments</option>
+                            <option value="transfer_in">Transfers In</option>
+                            <option value="transfer_out">Transfers Out</option>
+                        </select>
+                    </div>
                 </div>
             </div>
 
@@ -231,7 +174,13 @@ const LedgerPage = () => {
                     </tbody>
                 </table>
             </div>
-        </div>
+
+            <CreateAdjustmentModal
+                isOpen={isAdjustModalOpen}
+                onClose={() => setIsAdjustModalOpen(false)}
+                onAdjustmentCreated={fetchLedger}
+            />
+        </div >
     );
 };
 

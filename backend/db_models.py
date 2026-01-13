@@ -66,6 +66,10 @@ class ProductDB(Base):
     track_inventory = Column(Boolean, default=True)
     is_unique_item = Column(Boolean, default=False)
     
+    # Reservation System
+    reserved_until = Column(DateTime(timezone=True))
+    reserved_by = Column(String(200)) # session_id or user_id
+    
     # Vendor
     vendor_id = Column(String(50))
     vendor_name = Column(String(200))
@@ -128,6 +132,7 @@ class OrderDB(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     order_number = Column(String(50), unique=True, nullable=False)
+    idempotency_key = Column(String(100), unique=True)
     channel = Column(String(20))
     location_id = Column(String(50))
     staff_id = Column(String(50))
@@ -169,6 +174,7 @@ class OrderDB(Base):
     
     __table_args__ = (
         Index('idx_orders_number', 'order_number'),
+        Index('idx_orders_idempotency', 'idempotency_key'),
         Index('idx_orders_customer', 'customer_id'),
         Index('idx_orders_channel', 'channel'),
         Index('idx_orders_status', 'status'),
@@ -235,4 +241,95 @@ class TrafficLogDB(Base):
     
     __table_args__ = (
         Index('idx_traffic_created', 'created_at'),
+    )
+
+
+# Locations table
+class LocationDB(Base):
+    __tablename__ = "locations"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(200), nullable=False)
+    type = Column(String(50)) # store, warehouse
+    address = Column(String(500))
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# Transfers table
+class TransferDB(Base):
+    __tablename__ = "transfers"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transfer_number = Column(String(50), unique=True, nullable=False)
+    from_location_id = Column(String(100)) # Store UUID as string for flexibility or FK
+    to_location_id = Column(String(100))
+    status = Column(String(50)) # pending, in_transit, received, cancelled
+    items = Column(JSONB, nullable=False) # List of {product_id, quantity, name, sku}
+    items_count = Column(Integer, default=0)
+    notes = Column(Text)
+    created_by = Column(String(100))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    __table_args__ = (
+        Index('idx_transfers_number', 'transfer_number'),
+        Index('idx_transfers_status', 'status'),
+    )
+
+
+# Inventory Ledger table
+class InventoryLedgerDB(Base):
+    __tablename__ = "inventory_ledger"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(String(50), nullable=False)
+    sku = Column(String(50))
+    product_name = Column(String(255))
+    location_id = Column(String(100)) # Optional, for multi-location
+    
+    event_type = Column(String(50)) # sale, receive, adjust, return, transfer_in, transfer_out
+    quantity_change = Column(Integer, nullable=False) # e.g., -5 or +10
+    running_balance = Column(Integer) # Stock AFTER this event
+    
+    reference_id = Column(String(100)) # e.g., ORD-001, TRF-001
+    reference_type = Column(String(50)) # order, transfer, po, manual
+    notes = Column(Text)
+    
+    created_by = Column(String(100))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    __table_args__ = (
+        Index('idx_ledger_product', 'product_id'),
+        Index('idx_ledger_created', 'created_at'),
+        Index('idx_ledger_sku', 'sku'),
+        Index('idx_ledger_event', 'event_type'),
+    )
+
+
+# Purchase Orders table
+class PurchaseOrderDB(Base):
+    __tablename__ = "purchase_orders"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    po_number = Column(String(50), unique=True, nullable=False)
+    vendor_id = Column(String(50)) # Link to VendorDB.id
+    vendor_name = Column(String(200))
+    status = Column(String(50)) # draft, ordered, partial, received, closed, cancelled
+    total_amount = Column(Numeric(12, 2), default=0)
+    items_count = Column(Integer, default=0)
+    received_count = Column(Integer, default=0)
+    
+    items = Column(JSONB, default=[]) # List of line items
+    notes = Column(Text)
+    
+    expected_date = Column(DateTime(timezone=True))
+    received_date = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    __table_args__ = (
+        Index('idx_po_number', 'po_number'),
+        Index('idx_po_status', 'status'),
+        Index('idx_po_vendor', 'vendor_id'),
     )

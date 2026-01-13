@@ -17,12 +17,14 @@ import {
     FileText
 } from 'lucide-react';
 import { useOwner } from '../../context/OwnerContext';
+import CreatePurchaseOrderModal from '../../components/admin/CreatePurchaseOrderModal';
 
 const PurchaseOrdersPage = () => {
     const { getAuthHeader, backendUrl } = useOwner();
 
     const [purchaseOrders, setPurchaseOrders] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [showCreateModal, setShowCreateModal] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [activeTab, setActiveTab] = useState('all');
     const [currentPage, setCurrentPage] = useState(1);
@@ -51,50 +53,8 @@ const PurchaseOrdersPage = () => {
             setPurchaseOrders(response.data);
         } catch (error) {
             console.error('Error fetching POs:', error);
-            // Mock data
-            setPurchaseOrders([
-                {
-                    id: 'po-001',
-                    po_number: 'PO-2024-0015',
-                    vendor_name: 'Shree Gold Suppliers',
-                    status: 'ordered',
-                    total_amount: 250000,
-                    items_count: 5,
-                    created_at: new Date().toISOString(),
-                    expected_date: new Date(Date.now() + 604800000).toISOString()
-                },
-                {
-                    id: 'po-002',
-                    po_number: 'PO-2024-0014',
-                    vendor_name: 'Diamond World Trading',
-                    status: 'partial',
-                    total_amount: 180000,
-                    items_count: 3,
-                    received_count: 1,
-                    created_at: new Date(Date.now() - 604800000).toISOString(),
-                    expected_date: new Date().toISOString()
-                },
-                {
-                    id: 'po-003',
-                    po_number: 'PO-2024-0013',
-                    vendor_name: 'Silver Craft India',
-                    status: 'received',
-                    total_amount: 75000,
-                    items_count: 8,
-                    received_count: 8,
-                    created_at: new Date(Date.now() - 1209600000).toISOString(),
-                    received_date: new Date(Date.now() - 259200000).toISOString()
-                },
-                {
-                    id: 'po-004',
-                    po_number: 'PO-2024-0016',
-                    vendor_name: 'Shree Gold Suppliers',
-                    status: 'draft',
-                    total_amount: 320000,
-                    items_count: 10,
-                    created_at: new Date().toISOString()
-                }
-            ]);
+            console.error('Error fetching POs:', error);
+            setPurchaseOrders([]);
         } finally {
             setLoading(false);
         }
@@ -167,7 +127,10 @@ const PurchaseOrdersPage = () => {
                     >
                         View Vendors
                     </Link>
-                    <button className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600">
+                    <button
+                        onClick={() => setShowCreateModal(true)}
+                        className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600"
+                    >
                         <Plus className="h-4 w-4" />
                         New PO
                     </button>
@@ -313,6 +276,12 @@ const PurchaseOrdersPage = () => {
                     </div>
                 )}
             </div>
+
+            <CreatePurchaseOrderModal
+                isOpen={showCreateModal}
+                onClose={() => setShowCreateModal(false)}
+                onPOCreated={fetchPurchaseOrders}
+            />
         </div>
     );
 };

@@ -44,7 +44,7 @@ const InventoryPage = () => {
         try {
             // Fetch products with inventory data
             const [productsRes, locationsRes] = await Promise.all([
-                axios.get(`${backendUrl}/api/products`),
+                axios.get(`${backendUrl}/api/admin/products`, { headers: getAuthHeader() }),
                 axios.get(`${backendUrl}/api/admin/locations`, { headers: getAuthHeader() }).catch(() => ({ data: [{ id: 'loc-main', name: 'Main Store' }] }))
             ]);
 
@@ -53,17 +53,17 @@ const InventoryPage = () => {
             setLocations(locationsRes.data);
 
             // Calculate KPIs from real product data
-            const totalOnHand = productsData.reduce((sum, p) => sum + (p.stock_quantity || 0), 0);
-            const totalReserved = 0; // Would come from orders
-            const inventoryValue = productsData.reduce((sum, p) => sum + ((p.total_cost || 0) * (p.stock_quantity || 0)), 0);
+            const totalOnHand = productsData.reduce((sum, p) => sum + (p.onHand || 0), 0);
+            const totalReserved = productsData.reduce((sum, p) => sum + (p.reserved || 0), 0);
+            const inventoryValue = productsData.reduce((sum, p) => sum + ((p.totalCost || 0) * (p.stockQuantity || 0)), 0);
             const lowStockCount = productsData.filter(p =>
-                (p.stock_quantity || 0) <= (p.low_stock_threshold || 2) && (p.stock_quantity || 0) > 0
+                (p.stockQuantity || 0) <= (p.lowStockThreshold || 2) && (p.stockQuantity || 0) > 0
             ).length;
-            const stockoutCount = productsData.filter(p => (p.stock_quantity || 0) <= 0).length;
+            const stockoutCount = productsData.filter(p => (p.stockQuantity || 0) <= 0).length;
 
             setKpis({
                 totalOnHand,
-                totalAvailable: totalOnHand - totalReserved,
+                totalAvailable: productsData.reduce((sum, p) => sum + (p.stockQuantity || 0), 0),
                 totalReserved,
                 inventoryValue,
                 lowStockCount,
@@ -86,8 +86,8 @@ const InventoryPage = () => {
     };
 
     const getStockStatus = (product) => {
-        const stock = product.stock_quantity || 0;
-        const threshold = product.low_stock_threshold || 2;
+        const stock = product.stockQuantity || 0;
+        const threshold = product.lowStockThreshold || 2;
         if (stock <= 0) return 'out';
         if (stock <= threshold) return 'low';
         return 'ok';
@@ -138,51 +138,82 @@ const InventoryPage = () => {
 
             {/* KPI Cards */}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-                    <div className="flex items-center justify-between mb-2">
-                        <div className="p-2 bg-blue-50 rounded-lg">
-                            <Warehouse className="h-5 w-5 text-blue-500" />
+                {[
+                    {
+                        label: 'On Hand',
+                        value: kpis.totalOnHand,
+                        icon: Warehouse,
+                        color: 'text-blue-500',
+                        bg: 'bg-blue-50',
+                        tooltip: 'Total Physical Stock (Available + Reserved)'
+                    },
+                    {
+                        label: 'Available',
+                        value: kpis.totalAvailable,
+                        icon: Package,
+                        color: 'text-emerald-500',
+                        bg: 'bg-emerald-50',
+                        tooltip: 'Free to Sell (On Hand - Reserved)'
+                    },
+                    {
+                        label: 'Reserved',
+                        value: kpis.totalReserved,
+                        icon: ArrowRightLeft,
+                        color: 'text-orange-500',
+                        bg: 'bg-orange-50',
+                        tooltip: 'Sold but Not Shipped (Pending Orders)'
+                    },
+                    {
+                        label: 'Value at Cost',
+                        value: formatCurrency(kpis.inventoryValue),
+                        icon: null,
+                        color: 'text-gray-900',
+                        bg: 'bg-transparent',
+                        tooltip: 'Total Investment (Cost * On Hand)'
+                    },
+                    {
+                        label: 'Low Stock',
+                        value: kpis.lowStockCount,
+                        icon: AlertTriangle,
+                        color: 'text-amber-500',
+                        bg: 'bg-transparent',
+                        textColor: 'text-amber-600',
+                        tooltip: 'Items below low stock threshold'
+                    },
+                    {
+                        label: 'Stockouts',
+                        value: kpis.stockoutCount,
+                        icon: TrendingDown,
+                        color: 'text-red-500',
+                        bg: 'bg-transparent',
+                        textColor: 'text-red-600',
+                        tooltip: 'Items with 0 stock'
+                    }
+                ].map((stat, index) => (
+                    <div key={index} className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 relative group">
+                        <div className="flex items-center justify-between mb-2">
+                            {stat.icon && (
+                                <div className={`p-2 rounded-lg ${stat.bg}`}>
+                                    <stat.icon className={`h-5 w-5 ${stat.color}`} />
+                                </div>
+                            )}
+                            {/* Custom Tooltip */}
+                            <div className="relative group/tooltip">
+                                <div className="text-gray-300 hover:text-gray-500 cursor-help">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>
+                                </div>
+                                <div className="absolute right-0 top-6 w-48 p-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-10 pointer-events-none">
+                                    <div className="absolute -top-1 right-1 w-2 h-2 bg-gray-900 rotate-45"></div>
+                                    {stat.tooltip}
+                                </div>
+                            </div>
                         </div>
+                        <p className={`text-2xl font-bold ${stat.textColor || 'text-gray-900'}`}>{stat.value}</p>
+                        <p className="text-sm text-gray-500 flex items-center gap-1">
+                            {stat.label}
+                        </p>
                     </div>
-                    <p className="text-2xl font-bold text-gray-900">{kpis.totalOnHand}</p>
-                    <p className="text-sm text-gray-500">On Hand</p>
-                </div>
-
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-                    <div className="flex items-center justify-between mb-2">
-                        <div className="p-2 bg-emerald-50 rounded-lg">
-                            <Package className="h-5 w-5 text-emerald-500" />
-                        </div>
-                    </div>
-                    <p className="text-2xl font-bold text-gray-900">{kpis.totalAvailable}</p>
-                    <p className="text-sm text-gray-500">Available</p>
-                </div>
-
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-                    <p className="text-2xl font-bold text-gray-900">{kpis.totalReserved}</p>
-                    <p className="text-sm text-gray-500">Reserved</p>
-                </div>
-
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-                    <p className="text-2xl font-bold text-gray-900">{formatCurrency(kpis.inventoryValue)}</p>
-                    <p className="text-sm text-gray-500">Value at Cost</p>
-                </div>
-
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                        <AlertTriangle className="h-5 w-5 text-amber-500" />
-                    </div>
-                    <p className="text-2xl font-bold text-amber-600">{kpis.lowStockCount}</p>
-                    <p className="text-sm text-gray-500">Low Stock</p>
-                </div>
-
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                        <TrendingDown className="h-5 w-5 text-red-500" />
-                    </div>
-                    <p className="text-2xl font-bold text-red-600">{kpis.stockoutCount}</p>
-                    <p className="text-sm text-gray-500">Stockouts</p>
-                </div>
+                ))}
             </div>
 
             {/* Quick Actions */}
@@ -257,7 +288,10 @@ const InventoryPage = () => {
                     <tbody className="divide-y divide-gray-100">
                         {filteredProducts.slice(0, 20).map((product) => {
                             const status = getStockStatus(product);
-                            const stock = product.stock_quantity || 0;
+                            const available = product.stockQuantity || 0;
+                            const reserved = product.reserved || 0;
+                            const onHand = product.onHand || (available + reserved);
+
                             return (
                                 <tr key={product.id} className="hover:bg-gray-50">
                                     <td className="px-4 py-4">
@@ -272,10 +306,10 @@ const InventoryPage = () => {
                                         </div>
                                     </td>
                                     <td className="px-4 py-4 text-sm text-gray-500 font-mono">{product.sku || 'N/A'}</td>
-                                    <td className="px-4 py-4 text-center font-medium">{stock}</td>
-                                    <td className="px-4 py-4 text-center text-gray-500">0</td>
-                                    <td className="px-4 py-4 text-center font-medium">{stock}</td>
-                                    <td className="px-4 py-4 text-center text-gray-600">{formatCurrency(product.total_cost || 0)}</td>
+                                    <td className="px-4 py-4 text-center font-medium">{onHand}</td>
+                                    <td className="px-4 py-4 text-center text-gray-500">{reserved}</td>
+                                    <td className="px-4 py-4 text-center font-medium">{available}</td>
+                                    <td className="px-4 py-4 text-center text-gray-600">{formatCurrency(product.totalCost || 0)}</td>
                                     <td className="px-4 py-4">
                                         <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${status === 'ok' ? 'bg-emerald-100 text-emerald-700' :
                                             status === 'low' ? 'bg-amber-100 text-amber-700' :

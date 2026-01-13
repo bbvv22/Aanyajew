@@ -14,6 +14,7 @@ import {
     ChevronRight
 } from 'lucide-react';
 import { useOwner } from '../../context/OwnerContext';
+import CreateCustomerModal from '../../components/admin/CreateCustomerModal';
 
 const CustomersPage = () => {
     const { getAuthHeader, backendUrl } = useOwner();
@@ -23,6 +24,7 @@ const CustomersPage = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
     const [activeDropdown, setActiveDropdown] = useState(null);
+    const [showAddModal, setShowAddModal] = useState(false);
     const itemsPerPage = 15;
 
     useEffect(() => {
@@ -35,7 +37,13 @@ const CustomersPage = () => {
             const response = await axios.get(`${backendUrl}/api/admin/customers`, {
                 headers: getAuthHeader()
             });
-            setCustomers(response.data);
+            // Map backend keys to frontend expectations
+            const mappedCustomers = response.data.map(c => ({
+                ...c,
+                total_orders: c.orders || 0,
+                total_spent: c.totalSpent || 0
+            }));
+            setCustomers(mappedCustomers);
         } catch (error) {
             console.error('Error fetching customers:', error);
             // Mock data
@@ -87,7 +95,10 @@ const CustomersPage = () => {
                     <h1 className="text-2xl font-bold text-gray-900">Customers</h1>
                     <p className="text-gray-500 mt-1">{customers.length} customers</p>
                 </div>
-                <button className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600">
+                <button
+                    onClick={() => setShowAddModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600"
+                >
                     <Plus className="h-4 w-4" />
                     Add Customer
                 </button>
@@ -214,6 +225,12 @@ const CustomersPage = () => {
                     </div>
                 )}
             </div>
+
+            <CreateCustomerModal
+                isOpen={showAddModal}
+                onClose={() => setShowAddModal(false)}
+                onCustomerCreated={fetchCustomers}
+            />
         </div>
     );
 };

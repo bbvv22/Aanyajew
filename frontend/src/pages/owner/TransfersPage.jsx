@@ -3,11 +3,13 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { ArrowLeft, ArrowRightLeft, Plus, Truck, CheckCircle, Clock, XCircle } from 'lucide-react';
 import { useOwner } from '../../context/OwnerContext';
+import CreateTransferModal from '../../components/admin/CreateTransferModal';
 
 const TransfersPage = () => {
     const { getAuthHeader, backendUrl } = useOwner();
     const [transfers, setTransfers] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
     useEffect(() => {
         fetchTransfers();
@@ -21,33 +23,7 @@ const TransfersPage = () => {
             setTransfers(response.data);
         } catch (error) {
             console.error('Error fetching transfers:', error);
-            // Mock data for now
-            setTransfers([
-                {
-                    id: 'TRF-001',
-                    from_location: 'Main Store',
-                    to_location: 'Warehouse',
-                    items_count: 5,
-                    status: 'pending',
-                    created_at: new Date().toISOString()
-                },
-                {
-                    id: 'TRF-002',
-                    from_location: 'Warehouse',
-                    to_location: 'Main Store',
-                    items_count: 3,
-                    status: 'in_transit',
-                    created_at: new Date(Date.now() - 86400000).toISOString()
-                },
-                {
-                    id: 'TRF-003',
-                    from_location: 'Main Store',
-                    to_location: 'Branch 2',
-                    items_count: 8,
-                    status: 'received',
-                    created_at: new Date(Date.now() - 172800000).toISOString()
-                }
-            ]);
+            setTransfers([]);
         } finally {
             setLoading(false);
         }
@@ -104,7 +80,10 @@ const TransfersPage = () => {
                         <p className="text-gray-500 mt-1">Move inventory between locations</p>
                     </div>
                 </div>
-                <button className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600">
+                <button
+                    onClick={() => setIsCreateModalOpen(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600"
+                >
                     <Plus className="h-4 w-4" />
                     New Transfer
                 </button>
@@ -158,6 +137,12 @@ const TransfersPage = () => {
                     </tbody>
                 </table>
             </div>
+
+            <CreateTransferModal
+                isOpen={isCreateModalOpen}
+                onClose={() => setIsCreateModalOpen(false)}
+                onTransferCreated={fetchTransfers}
+            />
         </div>
     );
 };

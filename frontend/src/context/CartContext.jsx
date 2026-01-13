@@ -14,9 +14,18 @@ export const CartProvider = ({ children }) => {
     const [cartItems, setCartItems] = useState([]);
     const [coupon, setCoupon] = useState(null);
     const [isLoaded, setIsLoaded] = useState(false);
+    const [sessionId, setSessionId] = useState("");
 
     // Load cart from localStorage on mount
     useEffect(() => {
+        // Initialize Session ID
+        let sid = localStorage.getItem("sessionId");
+        if (!sid) {
+            sid = crypto.randomUUID();
+            localStorage.setItem("sessionId", sid);
+        }
+        setSessionId(sid);
+
         const savedCart = localStorage.getItem("cart");
         if (savedCart) {
             try {
@@ -125,6 +134,7 @@ export const CartProvider = ({ children }) => {
         getCartCount,
         isInCart,
         isLoaded,
+        sessionId,
     };
 
     return <CartContext.Provider value={value}>{children}</CartContext.Provider>;

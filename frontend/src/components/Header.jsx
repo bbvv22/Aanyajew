@@ -332,7 +332,11 @@ const Header = ({ isHome = true }) => {
                           {item.columns.flatMap(col => col.items).slice(0, 5).map((subItem, idx) => (
                             <Link
                               key={idx}
-                              to={`/products?search=${encodeURIComponent(subItem)}`}
+                              to={
+                                subItem.startsWith('All ')
+                                  ? `/products?category=${encodeURIComponent(item.name)}`
+                                  : `/products?category=${encodeURIComponent(item.name)}&subcategory=${encodeURIComponent(subItem)}`
+                              }
                               className="block text-sm text-gray-500 py-1"
                               onClick={() => setMobileMenuOpen(false)}
                             >
@@ -522,7 +526,11 @@ const Header = ({ isHome = true }) => {
                           {column.items.map((menuItem, itemIndex) => (
                             <li key={itemIndex}>
                               <Link
-                                to={`/ products ? search = ${encodeURIComponent(menuItem)} `}
+                                to={
+                                  menuItem.startsWith('All ')
+                                    ? `/products?category=${encodeURIComponent(navItems[activeDropdown].name)}`
+                                    : `/products?category=${encodeURIComponent(navItems[activeDropdown].name)}&subcategory=${encodeURIComponent(menuItem)}`
+                                }
                                 onClick={() => setActiveDropdown(null)}
                                 className="text-base text-gray-600 hover:text-[#c4ad94] transition-colors block"
                               >

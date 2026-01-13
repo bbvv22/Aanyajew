@@ -49,7 +49,7 @@ const AnalyticsPage = () => {
             const daysMap = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
             const days = daysMap[dateRange] || 30;
 
-            const [statsRes, salesRes, channelRes, productsRes, alertsRes] = await Promise.all([
+            const results = await Promise.allSettled([
                 axios.get(`${backendUrl}/api/admin/dashboard?period=${dateRange}`, { headers }),
                 axios.get(`${backendUrl}/api/admin/analytics/sales?days=${days}`, { headers }),
                 axios.get(`${backendUrl}/api/admin/analytics/sales-by-channel?days=${days}`, { headers }),
@@ -57,11 +57,11 @@ const AnalyticsPage = () => {
                 axios.get(`${backendUrl}/api/admin/analytics/low-stock`, { headers })
             ]);
 
-            setDashboardStats(statsRes.data);
-            setSalesData(salesRes.data);
-            setSalesByChannel(channelRes.data);
-            setTopProducts(productsRes.data);
-            setLowStockAlerts(alertsRes.data);
+            setDashboardStats(results[0].status === 'fulfilled' ? results[0].value.data : null);
+            setSalesData(results[1].status === 'fulfilled' ? results[1].value.data : []);
+            setSalesByChannel(results[2].status === 'fulfilled' ? results[2].value.data : []);
+            setTopProducts(results[3].status === 'fulfilled' ? results[3].value.data : []);
+            setLowStockAlerts(results[4].status === 'fulfilled' ? results[4].value.data : []);
 
         } catch (error) {
             console.error("Error fetching analytics:", error);
@@ -81,10 +81,10 @@ const AnalyticsPage = () => {
             case 'Sales by Day':
                 return salesData.map(d => ({
                     name: new Date(d.date).toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' }),
-                    sales: d.gross_sales,
-                    profit: d.gross_profit,
-                    orders: d.orders
-                })).reverse(); // API returns newest first? No, actually API returns old -> new typically, but let's check order. Server code: loops "days ago" which means newest is usually last appended. But server code iterates range(days) and subtracts from today, appending day by day backwards if I recall?
+                    sales: d.sales,
+                    profit: d.profit,
+                    // orders: d.orders // Backend doesn't provide daily order count yet in this endpoint
+                })).reverse();
             // Server code: `for i in range(days): date = now - timedelta(days=days - 1 - i)` -> This goes from oldest to newest. Good.
 
             case 'Sales by Channel':
@@ -98,10 +98,10 @@ const AnalyticsPage = () => {
             case 'Sales by Product':
             case 'Profit by Product':
                 return topProducts.map(d => ({
-                    name: d.product_name,
+                    name: d.name,
                     sales: d.revenue,
                     profit: d.profit,
-                    units: d.units_sold
+                    units: d.quantity
                 }));
 
             case 'Low Stock Forecast':
@@ -393,8 +393,8 @@ const AnalyticsPage = () => {
                             <YAxis tick={{ fontSize: 12, fill: '#9ca3af' }} tickFormatter={(v) => `₹${(v / 1000)}K`} />
                             <Tooltip labelFormatter={(d) => new Date(d).toLocaleDateString()} formatter={(value) => [formatCurrency(value)]} />
                             <Legend />
-                            <Area type="monotone" dataKey="gross_sales" name="Sales" stroke="#f59e0b" fillOpacity={1} fill="url(#colorSales)" strokeWidth={2} />
-                            <Area type="monotone" dataKey="gross_profit" name="Profit" stroke="#10b981" fillOpacity={0.1} fill="#10b981" strokeWidth={2} />
+                            <Area type="monotone" dataKey="sales" name="Sales" stroke="#f59e0b" fillOpacity={1} fill="url(#colorSales)" strokeWidth={2} />
+                            <Area type="monotone" dataKey="profit" name="Profit" stroke="#10b981" fillOpacity={0.1} fill="#10b981" strokeWidth={2} />
                         </AreaChart>
                     </ResponsiveContainer>
                 </div>
