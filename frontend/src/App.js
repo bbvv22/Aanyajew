@@ -47,6 +47,7 @@ import AdminOrderDetailPage from "./pages/admin/AdminOrderDetailPage";
 import ProductsAdmin from "./pages/admin/ProductsAdmin";
 import ProductEditPage from "./pages/admin/ProductEditPage";
 import ReviewsAdmin from "./pages/admin/ReviewsAdmin";
+import ReturnsAdmin from "./pages/admin/ReturnsAdmin";
 import NavigationAdmin from "./pages/admin/NavigationAdmin";
 
 // Owner Portal Pages
@@ -62,6 +63,7 @@ import CustomersPage from "./pages/owner/CustomersPage";
 import AnalyticsPage from "./pages/owner/AnalyticsPage";
 import MarketingPage from "./pages/owner/MarketingPage";
 import CouponsPage from "./pages/owner/CouponsPage";
+import AbandonedCartsPage from "./pages/owner/AbandonedCartsPage";
 import SettingsPage from "./pages/owner/SettingsPage";
 
 // Helper for device detection
@@ -166,6 +168,7 @@ function App() {
                     {/* Orders */}
                     <Route path="orders" element={<OrdersPage />} />
                     <Route path="orders/:id" element={<AdminOrderDetailPage />} />
+                    <Route path="returns" element={<ReturnsAdmin />} />
 
                     {/* Products */}
                     <Route path="products" element={<ProductsAdmin />} />
@@ -191,6 +194,7 @@ function App() {
                     {/* Marketing */}
                     <Route path="marketing" element={<MarketingPage />} />
                     <Route path="coupons" element={<CouponsPage />} />
+                    <Route path="abandoned-carts" element={<AbandonedCartsPage />} />
 
                     {/* Analytics */}
                     <Route path="analytics" element={<AnalyticsPage />} />

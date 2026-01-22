@@ -4,9 +4,9 @@ import { Link } from 'react-router-dom';
 import { Button } from './ui/button';
 
 const staticCategories = [
-  { id: 1, name: "Engagement Rings", link: "/category/Engagement Rings" },
-  { id: 2, name: "Wedding Jewellery", link: "/category/Wedding Rings" },
-  { id: 3, name: "Diamond Jewellery", link: "/category/Diamond Jewellery" }
+  { id: 1, name: "Engagement Rings", link: "/products?category=Engagement%20Rings" },
+  { id: 2, name: "Wedding Jewellery", link: "/products?category=Wedding%20Rings" },
+  { id: 3, name: "Diamond Jewellery", link: "/products?category=Diamond%20Jewellery" }
 ];
 
 const CategorySection = () => {

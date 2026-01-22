@@ -92,6 +92,23 @@ const AdminOrderDetailPage = () => {
 
     const currentStep = getStatusStep(order.status);
 
+    const handleShipOrder = async () => {
+        if (!window.confirm("Are you sure you want to create a shipment? This will generate a label in Shiprocket.")) return;
+
+        try {
+            setLoading(true); // Re-use loading or add specific state
+            await axios.post(`${backendUrl}/api/admin/orders/${id}/ship`, {}, {
+                headers: getAuthHeader()
+            });
+            success("Shipment created successfully!");
+            fetchOrderDetails();
+        } catch (error) {
+            console.error("Shipping failed", error);
+            showError("Failed to create shipment. Check Shiprocket credentials.");
+            setLoading(false);
+        }
+    };
+
     return (
         <div className="min-h-screen bg-gray-50 p-6 md:p-8">
             <div className="max-w-5xl mx-auto space-y-6">
@@ -108,9 +125,9 @@ const AdminOrderDetailPage = () => {
                             <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
                                 {order.orderNumber || order.id}
                                 <span className={`px-3 py-1 rounded-full text-xs font-medium border ${order.status === 'delivered' ? 'bg-green-50 text-green-700 border-green-200' :
-                                        order.status === 'shipped' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                                            order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
-                                                'bg-amber-50 text-amber-700 border-amber-200'
+                                    order.status === 'shipped' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                        order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
+                                            'bg-amber-50 text-amber-700 border-amber-200'
                                     }`}>
                                     {order.status?.toUpperCase()}
                                 </span>
@@ -120,6 +137,17 @@ const AdminOrderDetailPage = () => {
                             </p>
                         </div>
                     </div>
+
+                    {/* Ship Action */}
+                    {order.status === 'processing' && (
+                        <button
+                            onClick={handleShipOrder}
+                            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm"
+                        >
+                            <Truck className="h-4 w-4" />
+                            Ship Order
+                        </button>
+                    )}
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -133,8 +161,8 @@ const AdminOrderDetailPage = () => {
                                     <div key={step.label} className="flex flex-col items-center flex-1 relative z-10">
                                         <div
                                             className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors duration-300 ${index <= currentStep
-                                                    ? "bg-amber-500 text-white shadow-md shadow-amber-200"
-                                                    : "bg-gray-100 text-gray-400"
+                                                ? "bg-amber-500 text-white shadow-md shadow-amber-200"
+                                                : "bg-gray-100 text-gray-400"
                                                 }`}
                                         >
                                             <step.icon className="h-5 w-5" />

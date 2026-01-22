@@ -32,19 +32,23 @@ const ProductDetailPage = () => {
     useEffect(() => {
         const fetchProduct = async () => {
             try {
-                const response = await axios.get(`${backendUrl}/api/products`);
-                const found = response.data.find((p) => p.id === id);
-                setProduct(found);
+                // 1. Fetch the specific product details
+                const response = await axios.get(`${backendUrl}/api/products/${id}`);
+                const foundProduct = response.data;
+                setProduct(foundProduct);
 
-                // Get related products from same category
-                if (found) {
-                    const related = response.data
-                        .filter((p) => p.category === found.category && p.id !== id)
+                // 2. Fetch related products based on category
+                if (foundProduct && foundProduct.category) {
+                    const relatedRes = await axios.get(`${backendUrl}/api/products?category=${foundProduct.category}&limit=5`);
+                    // Filter out the current product from related list
+                    const related = relatedRes.data
+                        .filter((p) => p.id !== id)
                         .slice(0, 4);
                     setRelatedProducts(related);
                 }
             } catch (error) {
                 console.error("Error fetching product:", error);
+                setProduct(null);
             } finally {
                 setLoading(false);
             }
@@ -300,7 +304,7 @@ const ProductDetailPage = () => {
                             <div className="flex justify-between text-sm">
                                 <span className="text-gray-500">Category</span>
                                 <Link
-                                    to={`/category/${encodeURIComponent(product.category)}`}
+                                    to={`/products?category=${encodeURIComponent(product.category)}`}
                                     className="text-[#c4ad94] hover:underline"
                                 >
                                     {product.category}

@@ -48,9 +48,17 @@ const ProductsPage = () => {
         const fetchData = async () => {
             try {
                 const backendUrl = process.env.REACT_APP_BACKEND_URL || "http://localhost:8006";
-                // Fetch products and category tree in parallel
+
+                // Prepare params
+                const params = new URLSearchParams();
+                if (selectedCategory && selectedCategory !== "all") params.append("category", selectedCategory);
+                if (selectedSubCategory && selectedSubCategory !== "all") params.append("subcategory", selectedSubCategory);
+                // We can increase limit or handle pagination later, for now ensure we get enough items for the view
+                params.append("limit", "1000");
+
+                // Fetch products with filters and category tree in parallel
                 const [productsRes, treeRes] = await Promise.all([
-                    axios.get(`${backendUrl}/api/products`),
+                    axios.get(`${backendUrl}/api/products?${params.toString()}`),
                     axios.get(`${backendUrl}/api/navigation`)
                 ]);
 
@@ -75,7 +83,7 @@ const ProductsPage = () => {
             }
         };
         fetchData();
-    }, []);
+    }, [selectedCategory, selectedSubCategory]);
 
     const filteredProducts = products.filter((product) => {
         const normalize = (str) => (str || "").trim().toLowerCase();

@@ -81,8 +81,54 @@ const CheckoutPage = () => {
         }
     }, [isLoaded, cartItems.length, navigate, orderPlaced]);
 
+    // Save cart for abandoned cart reminders
+    const saveCartForReminder = async (email) => {
+        if (!email || cartItems.length === 0) return;
+
+        const backendUrl = process.env.REACT_APP_BACKEND_URL || "http://localhost:8006";
+        const token = localStorage.getItem("token");
+
+        try {
+            await fetch(`${backendUrl}/api/cart/save`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(token && { "Authorization": `Bearer ${token}` })
+                },
+                body: JSON.stringify({
+                    email: email,
+                    customer_name: `${formData.firstName} ${formData.lastName}`.trim() || null,
+                    phone: formData.phone || null,
+                    items: cartItems.map(item => ({
+                        id: item.id,
+                        name: item.name,
+                        price: item.price,
+                        quantity: item.quantity,
+                        image: item.image
+                    })),
+                    cart_total: getCartTotal() - (coupon?.discountAmount || 0),
+                    session_id: sessionId
+                })
+            });
+        } catch (err) {
+            console.log("Cart save for reminder failed (non-critical):", err);
+        }
+    };
+
+    // Debounce timer for email save
+    const [emailSaveTimeout, setEmailSaveTimeout] = useState(null);
+
     const handleChange = (e) => {
-        setFormData({ ...formData, [e.target.name]: e.target.value });
+        const { name, value } = e.target;
+        setFormData({ ...formData, [name]: value });
+
+        // Save cart when email is entered (with debounce)
+        if (name === "email" && value.includes("@")) {
+            if (emailSaveTimeout) clearTimeout(emailSaveTimeout);
+            setEmailSaveTimeout(setTimeout(() => {
+                saveCartForReminder(value);
+            }, 2000)); // Save 2 seconds after user stops typing
+        }
     };
 
     const subtotal = getCartTotal();
@@ -138,6 +184,17 @@ const CheckoutPage = () => {
             if (!response.ok) {
                 const error = await response.json();
                 throw new Error(error.detail || "Failed to place order");
+            }
+
+            // Mark cart as converted (no longer abandoned)
+            try {
+                await fetch(`${backendUrl}/api/cart/convert`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email: formData.email })
+                });
+            } catch (convErr) {
+                console.log("Cart conversion tracking failed (non-critical):", convErr);
             }
 
             // Order placed successfully
@@ -197,7 +254,7 @@ const CheckoutPage = () => {
                 </div>
             </div>
 
-            {/* Reservation Timer */}
+            {/* Reservation Timer Hidden 
             {timeLeft !== null && (
                 <div className={`border-b ${timeLeft > 0 ? 'bg-blue-50 border-blue-100' : 'bg-red-50 border-red-100'}`}>
                     <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-center gap-2">
@@ -206,14 +263,15 @@ const CheckoutPage = () => {
                         ) : (
                             <AlertTriangle className="h-4 w-4 text-red-600" />
                         )}
-                        <p className={`text-sm font-medium ${timeLeft > 0 ? 'text-blue-800' : 'text-red-800'}`}>
-                            {timeLeft > 0
-                                ? `Items reserved for ${formatTime(timeLeft)}`
-                                : "Reservation expired. Please return to cart."}
-                        </p>
+                        <span className={`text-sm font-medium ${timeLeft > 0 ? 'text-blue-700' : 'text-red-700'}`}>
+                            {timeLeft > 0 
+                                ? `Items reserved for ${formatTime(timeLeft)}` 
+                                : "Reservation expired. Please restart checkout."}
+                        </span>
                     </div>
                 </div>
             )}
+            */}
 
             <div className="max-w-7xl mx-auto px-4 py-8">
                 <form onSubmit={handleSubmit}>
@@ -415,7 +473,7 @@ const CheckoutPage = () => {
 
                                 <Button
                                     type="submit"
-                                    disabled={loading || timeLeft === 0}
+                                    disabled={loading}
                                     className="w-full py-6 mt-6 bg-[#c4ad94] hover:bg-[#b39d84] text-white text-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {loading ? "Processing..." : `Pay ₹${total.toLocaleString()}`}

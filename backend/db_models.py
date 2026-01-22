@@ -333,3 +333,111 @@ class PurchaseOrderDB(Base):
         Index('idx_po_status', 'status'),
         Index('idx_po_vendor', 'vendor_id'),
     )
+
+
+# Product Reviews table
+class ReviewDB(Base):
+    __tablename__ = "reviews"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), nullable=False)
+    user_id = Column(UUID(as_uuid=True), nullable=False)
+    user_name = Column(String(200))
+    rating = Column(Integer, nullable=False)  # 1-5 stars
+    title = Column(String(200))
+    comment = Column(Text)
+    is_verified_purchase = Column(Boolean, default=False)
+    is_approved = Column(Boolean, default=True)  # For moderation
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    __table_args__ = (
+        Index('idx_reviews_product', 'product_id'),
+        Index('idx_reviews_user', 'user_id'),
+        Index('idx_reviews_rating', 'rating'),
+        CheckConstraint('rating >= 1 AND rating <= 5', name='check_rating_range'),
+    )
+
+
+# Return Requests table
+class ReturnRequestDB(Base):
+    __tablename__ = "return_requests"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), nullable=False)
+    customer_id = Column(UUID(as_uuid=True), nullable=False)
+    reason = Column(String(50), nullable=False)  # defective, wrong_item, not_as_described, changed_mind
+    description = Column(Text)
+    status = Column(String(50), default='pending')  # pending, approved, rejected, completed
+    refund_amount = Column(Numeric(12, 2))
+    admin_notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    __table_args__ = (
+        Index('idx_returns_order', 'order_id'),
+        Index('idx_returns_customer', 'customer_id'),
+        Index('idx_returns_status', 'status'),
+    )
+
+
+# Abandoned Carts table (for guest checkout and logged-in users)
+class AbandonedCartDB(Base):
+    __tablename__ = "abandoned_carts"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # For guests: email is the identifier
+    email = Column(String(255), nullable=False)
+    # For logged-in users: link to user
+    user_id = Column(UUID(as_uuid=True), nullable=True)
+    # Customer name (if provided during checkout)
+    customer_name = Column(String(200))
+    # Phone (if provided)
+    phone = Column(String(20))
+    # Cart items as JSON
+    items = Column(JSONB, nullable=False, default=[])
+    # Cart total
+    cart_total = Column(Numeric(12, 2), default=0)
+    # Tracking
+    session_id = Column(String(100))  # To match with frontend session
+    # Email reminder tracking
+    reminder_count = Column(Integer, default=0)  # How many reminders sent
+    last_reminder_at = Column(DateTime(timezone=True))
+    # Status: active, converted, expired
+    status = Column(String(50), default='active')
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    __table_args__ = (
+        Index('idx_abandoned_email', 'email'),
+        Index('idx_abandoned_user', 'user_id'),
+        Index('idx_abandoned_status', 'status'),
+        Index('idx_abandoned_updated', 'updated_at'),
+    )
+
+
+# Product Reservations table (for multi-quantity reservation tracking)
+class ProductReservationDB(Base):
+    __tablename__ = "product_reservations"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    product_id = Column(UUID(as_uuid=True), nullable=False)
+    session_id = Column(String(100), nullable=False)  # Who reserved
+    quantity = Column(Integer, default=1)  # How many reserved
+    expires_at = Column(DateTime(timezone=True), nullable=False)  # When reservation expires
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    __table_args__ = (
+        Index('idx_reservation_product', 'product_id'),
+        Index('idx_reservation_session', 'session_id'),
+        Index('idx_reservation_expires', 'expires_at'),
+    )
+
+
+# Admin Settings table (Key-Value store)
+class AdminSettingsDB(Base):
+    __tablename__ = "admin_settings"
+    
+    key = Column(String(100), primary_key=True)
+    value = Column(String, nullable=False)  # JSON or simple string
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

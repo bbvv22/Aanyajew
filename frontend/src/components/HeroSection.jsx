@@ -13,7 +13,7 @@ const HeroSection = () => {
       title: 'Diamond Engagement Rings',
       description: 'Beautifully designed, certified diamond rings for the perfect proposal.',
       buttonText: 'DISCOVER',
-      buttonLink: '/category/Engagement Rings'
+      buttonLink: '/products?category=Engagement%20Rings'
     },
     {
       image: 'https://images.unsplash.com/photo-1628973116165-8b91e31b5984',

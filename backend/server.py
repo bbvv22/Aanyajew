@@ -34,7 +34,7 @@ load_dotenv(env_path)
 
 # Import models
 from database import get_db, create_tables
-from db_models import UserDB, OrderDB, ProductDB, VendorDB, CouponDB, LocationDB, TransferDB, InventoryLedgerDB, PurchaseOrderDB
+from db_models import UserDB, OrderDB, ProductDB, VendorDB, CouponDB, LocationDB, TransferDB, InventoryLedgerDB, PurchaseOrderDB, ReviewDB, ReturnRequestDB, AbandonedCartDB, ProductReservationDB, AdminSettingsDB
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -66,10 +66,137 @@ app = FastAPI()
 import cloudinary
 import cloudinary.uploader
 
+# Background Scheduler for Automatic Abandoned Cart Emails
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+
+# Global settings are now stored in DB (AdminSettingsDB)
+
+scheduler = AsyncIOScheduler()
+
+async def send_automatic_abandoned_cart_emails():
+    """
+    Background task that runs every 5 minutes.
+    Sends reminder emails to carts abandoned based on configured timing.
+    """
+    from database import async_session_maker
+    from datetime import timedelta
+    
+    async with async_session_maker() as db:
+        try:
+            # 1. Fetch configurable timing from DB
+            settings_res = await db.execute(
+                select(AdminSettingsDB).where(AdminSettingsDB.key == "abandoned_cart_minutes")
+            )
+            setting_row = settings_res.scalar_one_or_none()
+            minutes = int(setting_row.value) if setting_row else 5  # Default 5 (User Preference)
+            
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            
+            result = await db.execute(
+                select(AbandonedCartDB)
+                .where(
+                    AbandonedCartDB.status == 'active',
+                    AbandonedCartDB.updated_at < cutoff,
+                    AbandonedCartDB.reminder_count < 3
+                )
+                .limit(20)  # Process 20 at a time
+            )
+            carts = result.scalars().all()
+            
+            for cart in carts:
+                try:
+                    # Build email content
+                    items_html = ""
+                    for item in (cart.items or [])[:5]:  # Max 5 items
+                        items_html += f"""
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">
+                                <img src="{item.get('image', '')}" width="50" height="50" style="border-radius: 4px;" />
+                            </td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">
+                                {item.get('name', 'Product')}
+                            </td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">
+                                ₹{item.get('price', 0):,.0f}
+                            </td>
+                        </tr>
+                        """
+                    
+                    email_body = f"""
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #fafafa;">
+                        <div style="background: white; border-radius: 12px; padding: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+                            <h1 style="color: #c4ad94; text-align: center; margin-bottom: 20px;">✨ You left something beautiful behind!</h1>
+                            
+                            <p style="color: #333;">Hi {cart.customer_name or 'there'},</p>
+                            
+                            <p style="color: #666;">We noticed you left some gorgeous pieces in your cart. They're waiting for you!</p>
+                            
+                            <table style="width: 100%; margin: 20px 0; background: #f9f9f9; border-radius: 8px;">
+                                {items_html}
+                            </table>
+                            
+                            <p style="text-align: center; font-size: 20px; color: #333;">
+                                <strong>Cart Total: ₹{float(cart.cart_total):,.0f}</strong>
+                            </p>
+                            
+                            <div style="text-align: center; margin: 30px 0;">
+                                <a href="https://annyajewellers.com/cart" 
+                                   style="background: linear-gradient(135deg, #c4ad94, #a89070); color: white; 
+                                          padding: 16px 40px; text-decoration: none; border-radius: 30px; 
+                                          font-weight: bold; display: inline-block; box-shadow: 0 4px 15px rgba(196,173,148,0.4);">
+                                    Complete Your Purchase →
+                                </a>
+                            </div>
+                            
+                            <p style="color: #888; font-size: 13px; text-align: center;">
+                                Questions? Reply to this email or call +91 9100496169
+                            </p>
+                        </div>
+                        
+                        <p style="color: #999; font-size: 11px; text-align: center; margin-top: 20px;">
+                            Annya Jewellers | Hyderabad, India<br/>
+                            <a href="https://annyajewellers.com" style="color: #c4ad94;">www.annyajewellers.com</a>
+                        </p>
+                    </div>
+                    """
+                    
+                    # Send email
+                    await send_email_via_vercel(
+                        to_email=cart.email,
+                        subject="✨ Your cart is waiting for you - Annya Jewellers",
+                        body=email_body
+                    )
+                    
+                    # Update reminder tracking
+                    cart.reminder_count += 1
+                    cart.last_reminder_at = datetime.now(timezone.utc)
+                    logger.info(f"Sent abandoned cart reminder to {cart.email}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to send reminder to {cart.email}: {e}")
+            
+            await db.commit()
+            
+        except Exception as e:
+            import traceback
+            logger.error(f"Abandoned cart background task error: {e}")
+            logger.error(traceback.format_exc())
+
 # Initialize Database on Startup
 @app.on_event("startup")
 async def startup_event():
     await create_tables()
+    
+    # Start background scheduler for abandoned cart emails
+    scheduler.add_job(
+        send_automatic_abandoned_cart_emails,
+        IntervalTrigger(minutes=5),
+        id="abandoned_cart_emails",
+        replace_existing=True
+    )
+    scheduler.start()
+    logger.info("Started background scheduler for abandoned cart emails (every 5 minutes)")
 
 # Cloudinary Configuration
 cloudinary.config( 
@@ -88,6 +215,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate Limiting Setup
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -140,46 +276,88 @@ async def send_email(to_email: str, subject: str, body: str, is_html: bool = Fal
 
 async def send_email_via_vercel(to_email: str, subject: str = None, body: str = None, otp: str = None, brand: str = "Annya Jewellers"):
     """
-    Send email via Vercel Serverless Function (Mailer Microservice).
-    Supports both OTP (by passing 'otp') and generic emails (by passing 'subject' and 'body').
+    Send email via Vercel Serverless Function OR SMTP Fallback.
     """
     import httpx
     
     mailer_url = os.environ.get("MAILER_URL") 
     internal_key = os.environ.get("INTERNAL_KEY")
     
-    if not mailer_url or not internal_key:
-        logger.error("MAILER_URL or INTERNAL_KEY not set. Cannot send email.")
-        return
+    # Priority 1: Vercel Microservice
+    if mailer_url and internal_key:
+        payload = {
+            "to": to_email,
+            "brand": brand
+        }
+        if otp:
+            payload["otp"] = otp
+        if subject:
+            payload["subject"] = subject
+        if body:
+            payload["html"] = body
 
-    payload = {
-        "to": to_email,
-        "brand": brand
-    }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    mailer_url,
+                    headers={"x-internal-key": internal_key},
+                    json=payload,
+                )
+                response.raise_for_status()
+                logger.info(f"Email sent via Vercel to {to_email}")
+                return
+        except Exception as e:
+            logger.error(f"Failed to call Vercel Mailer: {e}")
+            # Fall through to SMTP if Vercel fails? Maybe not, could lead to dupes. 
+            # For now, let's assume if Vercel is configured, we only try that.
     
-    if otp:
-        payload["otp"] = otp
-    if subject:
-        payload["subject"] = subject
-    if body:
-        payload["html"] = body
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                mailer_url,
-                headers={"x-internal-key": internal_key},
-                json=payload,
-            )
-            response.raise_for_status()
-            logger.info(f"Email sent via Vercel to {to_email}")
+    # Priority 2: SMTP Fallback
+    smtp_email = os.environ.get("SMTP_EMAIL")
+    smtp_user = os.environ.get("SMTP_USER") # Some envs use this
+    smtp_sender = smtp_email or smtp_user
+    
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    # Correct key is SMTP_HOST (Zoho), fallback to SMTP_SERVER or default
+    smtp_server = os.environ.get("SMTP_HOST") or os.environ.get("SMTP_SERVER") or "smtp.gmail.com"
+    smtp_port = int(os.environ.get("SMTP_PORT", 465))
+    
+    if smtp_sender and smtp_password:
+        try:
+            msg = MIMEMultipart()
+            # Use SMTP_FROM_EMAIL if available for display name
+            from_header = os.environ.get("SMTP_FROM_EMAIL") or f"{brand} <{smtp_sender}>"
+            msg['From'] = from_header
+            msg['To'] = to_email
+            msg['Subject'] = subject or f"{brand} Notification"
             
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Vercel Mailer returned error {e.response.status_code}: {e.response.text}")
-        raise
-    except Exception as e:
-        logger.error(f"Failed to call Vercel Mailer: {e}")
-        raise
+            if otp:
+                body = f"<p>Your OTP is: <strong>{otp}</strong></p>" + (body or "")
+            
+            msg.attach(MIMEText(body or "", 'html'))
+            
+            # Run SMTP in threadpool
+            def send_sync():
+                # Use SMTP_SSL for 465, standard SMTP for others
+                if smtp_port == 465:
+                    with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+                        server.login(smtp_sender, smtp_password)
+                        server.send_message(msg)
+                else:
+                    with smtplib.SMTP(smtp_server, smtp_port) as server:
+                        server.starttls()
+                        server.login(smtp_sender, smtp_password)
+                        server.send_message(msg)
+
+            await asyncio.to_thread(send_sync)
+            logger.info(f"Email sent via SMTP to {to_email}")
+            return
+        except Exception as e:
+            logger.error(f"Failed to send SMTP email: {e}")
+            # Don't re-raise in background tasks usually, but for now we log it
+            # If this is critical (like OTP), the caller might need to know, but this function handles fallbacks.
+            pass
+
+    logger.error("No email configuration found. Checked MAILER_URL and SMTP_USER/PASSWORD.")
 
 # ============================================
 # AUTHENTICATION
@@ -264,6 +442,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 @api_router.get("/products")
 async def get_products(
     category: Optional[str] = None,
+    subcategory: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(100, le=1000),
     offset: int = 0,
@@ -274,6 +453,9 @@ async def get_products(
     
     if category:
         query = query.where(ProductDB.category == category)
+    
+    if subcategory:
+        query = query.where(ProductDB.subcategory == subcategory)
     
     if search:
         search_filter = or_(
@@ -391,6 +573,180 @@ async def get_categories_tree(db: AsyncSession = Depends(get_db)):
         }
         for cat, subs in tree.items()
     ]
+
+
+# ============================================
+# REVIEW ENDPOINTS
+# ============================================
+
+class ReviewCreate(BaseModel):
+    rating: int
+    title: Optional[str] = None
+    comment: Optional[str] = None
+
+@api_router.get("/products/{product_id}/reviews")
+async def get_product_reviews(
+    product_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all approved reviews for a product"""
+    result = await db.execute(
+        select(ReviewDB)
+        .where(ReviewDB.product_id == product_id, ReviewDB.is_approved == True)
+        .order_by(ReviewDB.created_at.desc())
+    )
+    reviews = result.scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "userName": r.user_name,
+            "rating": r.rating,
+            "title": r.title,
+            "comment": r.comment,
+            "isVerifiedPurchase": r.is_verified_purchase,
+            "createdAt": r.created_at.isoformat() if r.created_at else None
+        }
+        for r in reviews
+    ]
+
+@api_router.get("/products/{product_id}/rating")
+async def get_product_rating(
+    product_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get average rating and total reviews for a product"""
+    from sqlalchemy import func as sqlfunc
+    result = await db.execute(
+        select(
+            sqlfunc.avg(ReviewDB.rating).label('avg_rating'),
+            sqlfunc.count(ReviewDB.id).label('total')
+        )
+        .where(ReviewDB.product_id == product_id, ReviewDB.is_approved == True)
+    )
+    row = result.first()
+    avg_rating = float(row.avg_rating) if row.avg_rating else 0
+    return {
+        "averageRating": round(avg_rating, 1),
+        "totalReviews": row.total or 0
+    }
+
+@api_router.post("/products/{product_id}/reviews")
+async def create_review(
+    product_id: str,
+    review_data: ReviewCreate,
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Submit a review for a product (requires authentication)"""
+    if not 1 <= review_data.rating <= 5:
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+    
+    # Check if user has purchased this product
+    order_result = await db.execute(
+        select(OrderDB)
+        .where(
+            OrderDB.customer_id == current_user.id,
+            OrderDB.status.in_(['delivered', 'completed'])
+        )
+    )
+    orders = order_result.scalars().all()
+    is_verified = any(
+        any(str(item.get('productId')) == product_id for item in (o.items or []))
+        for o in orders
+    )
+    
+    # Check if user already reviewed this product
+    existing = await db.execute(
+        select(ReviewDB)
+        .where(ReviewDB.product_id == product_id, ReviewDB.user_id == current_user.id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="You have already reviewed this product")
+    
+    review = ReviewDB(
+        product_id=product_id,
+        user_id=current_user.id,
+        user_name=current_user.name,
+        rating=review_data.rating,
+        title=review_data.title,
+        comment=review_data.comment,
+        is_verified_purchase=is_verified,
+        is_approved=True  # Auto-approve by default
+    )
+    db.add(review)
+    await db.commit()
+    await db.refresh(review)
+    
+    return {
+        "id": str(review.id),
+        "userName": review.user_name,
+        "rating": review.rating,
+        "title": review.title,
+        "comment": review.comment,
+        "isVerifiedPurchase": review.is_verified_purchase,
+        "createdAt": review.created_at.isoformat() if review.created_at else None
+    }
+
+@api_router.get("/admin/reviews")
+async def get_all_reviews(
+    status: Optional[str] = None,  # all, pending, approved
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Get all reviews for admin moderation"""
+    query = select(ReviewDB).order_by(ReviewDB.created_at.desc())
+    if status == "pending":
+        query = query.where(ReviewDB.is_approved == False)
+    elif status == "approved":
+        query = query.where(ReviewDB.is_approved == True)
+    
+    result = await db.execute(query)
+    reviews = result.scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "productId": str(r.product_id),
+            "userName": r.user_name,
+            "rating": r.rating,
+            "title": r.title,
+            "comment": r.comment,
+            "isApproved": r.is_approved,
+            "createdAt": r.created_at.isoformat() if r.created_at else None
+        }
+        for r in reviews
+    ]
+
+@api_router.post("/admin/reviews/{review_id}/approve")
+async def approve_review(
+    review_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Approve a review"""
+    result = await db.execute(select(ReviewDB).where(ReviewDB.id == review_id))
+    review = result.scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    
+    review.is_approved = True
+    await db.commit()
+    return {"success": True, "message": "Review approved"}
+
+@api_router.delete("/admin/reviews/{review_id}")
+async def delete_review(
+    review_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Delete a review"""
+    result = await db.execute(select(ReviewDB).where(ReviewDB.id == review_id))
+    review = result.scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    
+    await db.delete(review)
+    await db.commit()
+    return {"success": True, "message": "Review deleted"}
 
 
 # ============================================
@@ -3105,6 +3461,12 @@ async def get_my_order_detail(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
         
+    # Check for return request
+    return_req_result = await db.execute(
+        select(ReturnRequestDB).where(ReturnRequestDB.order_id == order_id)
+    )
+    return_req = return_req_result.scalar_one_or_none()
+
     return {
         "id": str(order.id),
         "orderNumber": order.order_number,
@@ -3116,8 +3478,637 @@ async def get_my_order_detail(
         "paymentMethod": order.payment_method,
         "createdAt": order.created_at.isoformat() if order.created_at else None,
         "items": order.items,
-        "shippingAddress": order.shipping_address
+        "shippingAddress": order.shipping_address,
+        "returnRequest": {
+            "status": return_req.status,
+            "reason": return_req.reason,
+            "createdAt": return_req.created_at.isoformat() if return_req.created_at else None
+        } if return_req else None
     }
+
+@api_router.get("/orders/{order_id}/invoice")
+async def download_invoice(
+    order_id: str,
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Download GST-compliant invoice PDF for an order"""
+    from fastapi.responses import StreamingResponse
+    from invoice_generator import generate_invoice_pdf
+    
+    # Get order
+    result = await db.execute(
+        select(OrderDB)
+        .where(
+            OrderDB.id == order_id,
+            OrderDB.customer_id == str(current_user.id)
+        )
+    )
+    order = result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    pdf_buffer = generate_invoice_pdf(order)
+    
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=invoice-{order.order_number}.pdf"
+        }
+    )
+
+
+# -------------------------------------------------------------------------
+# Returns & Refunds System
+# -------------------------------------------------------------------------
+
+class ReturnRequest(BaseModel):
+    reason: str  # defective, wrong_item, not_as_described, changed_mind
+    description: Optional[str] = None
+
+@api_router.post("/orders/{order_id}/return")
+async def request_return(
+    order_id: str,
+    return_data: ReturnRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Request a return for an order"""
+    # Verify order exists and belongs to user
+    result = await db.execute(
+        select(OrderDB)
+        .where(
+            OrderDB.id == order_id,
+            OrderDB.customer_id == str(current_user.id)
+        )
+    )
+    order = result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Check if order is eligible for return (delivered within 7 days)
+    if order.status not in ['delivered', 'completed']:
+        raise HTTPException(status_code=400, detail="Only delivered orders can be returned")
+    
+    # Check for existing return request
+    existing = await db.execute(
+        select(ReturnRequestDB).where(ReturnRequestDB.order_id == order_id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Return request already exists for this order")
+    
+    # Create return request
+    return_request = ReturnRequestDB(
+        order_id=order_id,
+        customer_id=current_user.id,
+        reason=return_data.reason,
+        description=return_data.description,
+        refund_amount=order.grand_total,
+        status='pending'
+    )
+    db.add(return_request)
+    await db.commit()
+    await db.refresh(return_request)
+    
+    return {
+        "id": str(return_request.id),
+        "status": return_request.status,
+        "message": "Return request submitted successfully"
+    }
+
+@api_router.get("/my-returns")
+async def get_my_returns(
+    current_user: UserDB = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all return requests for current user"""
+    result = await db.execute(
+        select(ReturnRequestDB)
+        .where(ReturnRequestDB.customer_id == current_user.id)
+        .order_by(ReturnRequestDB.created_at.desc())
+    )
+    returns = result.scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "orderId": str(r.order_id),
+            "reason": r.reason,
+            "description": r.description,
+            "status": r.status,
+            "refundAmount": float(r.refund_amount) if r.refund_amount else 0,
+            "adminNotes": r.admin_notes,
+            "createdAt": r.created_at.isoformat() if r.created_at else None
+        }
+        for r in returns
+    ]
+
+@api_router.get("/admin/returns")
+async def get_all_returns(
+    status: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Get all return requests for admin"""
+    query = select(ReturnRequestDB).order_by(ReturnRequestDB.created_at.desc())
+    if status:
+        query = query.where(ReturnRequestDB.status == status)
+    
+    result = await db.execute(query)
+    returns = result.scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "orderId": str(r.order_id),
+            "customerId": str(r.customer_id),
+            "reason": r.reason,
+            "description": r.description,
+            "status": r.status,
+            "refundAmount": float(r.refund_amount) if r.refund_amount else 0,
+            "adminNotes": r.admin_notes,
+            "createdAt": r.created_at.isoformat() if r.created_at else None
+        }
+        for r in returns
+    ]
+
+class ReturnAction(BaseModel):
+    action: str  # approve, reject
+    notes: Optional[str] = None
+    refund_amount: Optional[float] = None
+
+@api_router.post("/admin/returns/{return_id}/action")
+async def process_return(
+    return_id: str,
+    action_data: ReturnAction,
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Approve or reject a return request"""
+    result = await db.execute(
+        select(ReturnRequestDB).where(ReturnRequestDB.id == return_id)
+    )
+    return_request = result.scalar_one_or_none()
+    
+    if not return_request:
+        raise HTTPException(status_code=404, detail="Return request not found")
+    
+    if return_request.status != 'pending':
+        raise HTTPException(status_code=400, detail="Return already processed")
+    
+    if action_data.action == 'approve':
+        return_request.status = 'approved'
+        if action_data.refund_amount:
+            return_request.refund_amount = action_data.refund_amount
+        
+        # Update order status
+        order_result = await db.execute(
+            select(OrderDB).where(OrderDB.id == return_request.order_id)
+        )
+        order = order_result.scalar_one_or_none()
+        if order:
+            order.status = 'return_approved'
+            
+    elif action_data.action == 'reject':
+        return_request.status = 'rejected'
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+    
+    return_request.admin_notes = action_data.notes
+    await db.commit()
+    
+    return {
+        "success": True,
+        "status": return_request.status,
+        "message": f"Return request {action_data.action}d"
+    }
+
+# -------------------------------------------------------------------------
+# Shipping Integration (Shiprocket)
+# -------------------------------------------------------------------------
+
+class ServiceabilityRequest(BaseModel):
+    pickup_pincode: int
+    delivery_pincode: int
+    weight: float
+    cod: int = 0
+
+@api_router.post("/shipping/check-serviceability")
+async def check_serviceability(data: ServiceabilityRequest, current_user: UserDB = Depends(get_current_user)):
+    """Check if delivery is available for a pincode"""
+    from shiprocket_client import shiprocket
+    try:
+        result = shiprocket.check_serviceability(
+            pickup_postcode=data.pickup_pincode,
+            delivery_postcode=data.delivery_pincode,
+            weight=data.weight,
+            cod=data.cod
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/admin/orders/{order_id}/ship")
+async def ship_order(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Create a shipment in Shiprocket for an order"""
+    from shiprocket_client import shiprocket
+    
+    # Get Order
+    result = await db.execute(select(OrderDB).where(OrderDB.id == order_id))
+    order = result.scalar_one_or_none()
+    
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+        
+    # Prepare data
+    shipping = order.shipping_address or {}
+    order_data = {
+        "order_id": order.order_number,
+        "order_date": order.created_at.strftime("%Y-%m-%d %H:%M"),
+        "customer_name": shipping.get("firstName", "") + " " + shipping.get("lastName", ""),
+        "address": shipping.get("address", ""),
+        "city": shipping.get("city", ""),
+        "pincode": shipping.get("postalCode", ""),
+        "state": shipping.get("state", ""),
+        "email": "customer@example.com", # Should be real email from UserDB
+        "phone": shipping.get("phone", ""),
+        "payment_method": "Prepaid", # Simplified
+        "sub_total": float(order.subtotal or 0),
+        "items": [
+            {
+                "name": item.get("name"),
+                "sku": item.get("id"),
+                "units": item.get("quantity"),
+                "selling_price": item.get("price")
+            }
+            for item in order.items
+        ]
+    }
+    
+    try:
+        response = shiprocket.create_order(order_data)
+        
+        # Save tracking details if successful
+        if response.get("order_id"):
+            order.status = "processing" # Update status
+            # In a real app, save 'shipment_id' and 'awb_code' to DB
+            await db.commit()
+            
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# -------------------------------------------------------------------------
+# Abandoned Cart System (Guest & Logged-in Users)
+# -------------------------------------------------------------------------
+
+class CartSaveRequest(BaseModel):
+    email: str
+    customer_name: Optional[str] = None
+    phone: Optional[str] = None
+    items: List[Dict[str, Any]]
+    cart_total: float
+    session_id: Optional[str] = None
+
+@api_router.post("/cart/save")
+async def save_cart_for_reminder(
+    cart_data: CartSaveRequest,
+    db: AsyncSession = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Save cart state for abandoned cart reminders.
+    Works for both guests (email only) and logged-in users.
+    Called when:
+    - User enters email on checkout (guest)
+    - User navigates away from checkout (logged-in)
+    """
+    user_id = None
+    
+    # Check if user is logged in
+    if credentials and credentials.credentials:
+        try:
+            token_user_id = decode_token(credentials.credentials)
+            if token_user_id:
+                result = await db.execute(select(UserDB).where(UserDB.id == token_user_id))
+                user = result.scalar_one_or_none()
+                if user:
+                    user_id = user.id
+        except:
+            pass  # Continue as guest
+    
+    # Check for existing cart with same email
+    existing = await db.execute(
+        select(AbandonedCartDB)
+        .where(
+            AbandonedCartDB.email == cart_data.email,
+            AbandonedCartDB.status == 'active'
+        )
+    )
+    cart = existing.scalar_one_or_none()
+    
+    if cart:
+        # Update existing cart
+        cart.items = cart_data.items
+        cart.cart_total = cart_data.cart_total
+        cart.customer_name = cart_data.customer_name or cart.customer_name
+        cart.phone = cart_data.phone or cart.phone
+        cart.session_id = cart_data.session_id or cart.session_id
+        if user_id:
+            cart.user_id = user_id
+    else:
+        # Create new cart entry
+        cart = AbandonedCartDB(
+            email=cart_data.email,
+            user_id=user_id,
+            customer_name=cart_data.customer_name,
+            phone=cart_data.phone,
+            items=cart_data.items,
+            cart_total=cart_data.cart_total,
+            session_id=cart_data.session_id,
+            status='active'
+        )
+        db.add(cart)
+    
+    await db.commit()
+    
+    return {"success": True, "message": "Cart saved for reminder"}
+
+@api_router.post("/cart/convert")
+async def mark_cart_converted(
+    email: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db)
+):
+    """Mark cart as converted after successful order placement"""
+    result = await db.execute(
+        select(AbandonedCartDB)
+        .where(
+            AbandonedCartDB.email == email,
+            AbandonedCartDB.status == 'active'
+        )
+    )
+    cart = result.scalar_one_or_none()
+    
+    if cart:
+        cart.status = 'converted'
+        await db.commit()
+    
+    return {"success": True}
+
+# Settings endpoints
+
+@api_router.get("/admin/settings/abandoned-cart")
+async def get_abandoned_cart_settings(
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Get abandoned cart settings"""
+    result = await db.execute(
+        select(AdminSettingsDB).where(AdminSettingsDB.key == "abandoned_cart_minutes")
+    )
+    setting = result.scalar_one_or_none()
+    return {"reminderMinutes": int(setting.value) if setting else 15}
+
+@api_router.post("/admin/settings/abandoned-cart")
+async def update_abandoned_cart_settings(
+    settings: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Update abandoned cart settings"""
+    if "reminderMinutes" in settings:
+        minutes = settings["reminderMinutes"]
+        if minutes in [5, 10, 15]:
+            # Update or create setting
+            result = await db.execute(
+                select(AdminSettingsDB).where(AdminSettingsDB.key == "abandoned_cart_minutes")
+            )
+            setting = result.scalar_one_or_none()
+            
+            if setting:
+                setting.value = str(minutes)
+            else:
+                db.add(AdminSettingsDB(key="abandoned_cart_minutes", value=str(minutes)))
+                
+            await db.commit()
+            return {"success": True, "reminderMinutes": minutes}
+            
+    return {"success": False, "error": "Invalid timing value"}
+
+@api_router.get("/admin/abandoned-carts")
+async def get_abandoned_carts(
+    status: Optional[str] = "active",
+    timing: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Get list of abandoned carts for admin"""
+    from datetime import timedelta
+    
+    # Use provided timing or fetch from DB
+    if timing:
+        minutes = timing
+    else:
+        settings_res = await db.execute(
+            select(AdminSettingsDB).where(AdminSettingsDB.key == "abandoned_cart_minutes")
+        )
+        setting_row = settings_res.scalar_one_or_none()
+        minutes = int(setting_row.value) if setting_row else 15
+        
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    
+    query = select(AbandonedCartDB).order_by(AbandonedCartDB.updated_at.desc())
+    
+    if status == "active":
+        query = query.where(
+            AbandonedCartDB.status == 'active',
+            AbandonedCartDB.updated_at < cutoff
+        )
+    elif status == "converted":
+        query = query.where(AbandonedCartDB.status == 'converted')
+    # 'all' = no filter
+    
+    result = await db.execute(query.limit(100))
+    carts = result.scalars().all()
+    
+    return [
+        {
+            "id": str(c.id),
+            "email": c.email,
+            "customerName": c.customer_name,
+            "phone": c.phone,
+            "items": c.items,
+            "cartTotal": float(c.cart_total) if c.cart_total else 0,
+            "reminderCount": c.reminder_count,
+            "lastReminderAt": c.last_reminder_at.isoformat() if c.last_reminder_at else None,
+            "status": c.status,
+            "createdAt": c.created_at.isoformat() if c.created_at else None,
+            "updatedAt": c.updated_at.isoformat() if c.updated_at else None
+        }
+        for c in carts
+    ]
+
+@api_router.post("/admin/abandoned-carts/send-reminders")
+async def send_abandoned_cart_reminders(
+    timing: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """
+    Send reminder emails to all eligible abandoned carts.
+    Eligibility: active, not updated past timing threshold, less than 3 reminders sent
+    """
+    from datetime import timedelta
+    
+    # Use provided timing or fetch from DB
+    if timing:
+        minutes = timing
+    else:
+        settings_res = await db.execute(
+            select(AdminSettingsDB).where(AdminSettingsDB.key == "abandoned_cart_minutes")
+        )
+        setting_row = settings_res.scalar_one_or_none()
+        minutes = int(setting_row.value) if setting_row else 15
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    
+    result = await db.execute(
+        select(AbandonedCartDB)
+        .where(
+            AbandonedCartDB.status == 'active',
+            AbandonedCartDB.updated_at < cutoff,
+            AbandonedCartDB.reminder_count < 3
+        )
+        .limit(50)
+    )
+    carts = result.scalars().all()
+    
+    sent_count = 0
+    errors = []
+    
+    for cart in carts:
+        try:
+            # Build email content
+            items_html = ""
+            for item in (cart.items or []):
+                items_html += f"""
+                <tr>
+                    <td style="padding: 10px; border-bottom: 1px solid #eee;">
+                        <img src="{item.get('image', '')}" width="60" height="60" style="border-radius: 4px;" />
+                    </td>
+                    <td style="padding: 10px; border-bottom: 1px solid #eee;">
+                        {item.get('name', 'Product')}
+                    </td>
+                    <td style="padding: 10px; border-bottom: 1px solid #eee;">
+                        ₹{item.get('price', 0):,.0f}
+                    </td>
+                </tr>
+                """
+            
+            email_body = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h1 style="color: #c4ad94; text-align: center;">You left something behind!</h1>
+                
+                <p>Hi {cart.customer_name or 'there'},</p>
+                
+                <p>We noticed you left some beautiful items in your cart. They're waiting for you!</p>
+                
+                <table style="width: 100%; margin: 20px 0;">
+                    {items_html}
+                </table>
+                
+                <p style="text-align: center; font-size: 18px;">
+                    <strong>Cart Total: ₹{float(cart.cart_total):,.0f}</strong>
+                </p>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="https://annyajewellers.com/cart" 
+                       style="background: #c4ad94; color: white; padding: 15px 30px; 
+                              text-decoration: none; border-radius: 5px; font-weight: bold;">
+                        Complete Your Purchase
+                    </a>
+                </div>
+                
+                <p style="color: #666; font-size: 12px; text-align: center;">
+                    If you have any questions, reply to this email or call us at +91 9100496169
+                </p>
+                
+                <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
+                
+                <p style="color: #999; font-size: 11px; text-align: center;">
+                    Annya Jewellers | Hyderabad, India<br/>
+                    <a href="https://annyajewellers.com" style="color: #c4ad94;">www.annyajewellers.com</a>
+                </p>
+            </div>
+            """
+            
+            # Send email via Vercel
+            await send_email_via_vercel(
+                to_email=cart.email,
+                subject=f"Your cart is waiting for you - Annya Jewellers",
+                body=email_body
+            )
+            
+            # Update reminder tracking
+            cart.reminder_count += 1
+            cart.last_reminder_at = datetime.now(timezone.utc)
+            sent_count += 1
+            
+        except Exception as e:
+            errors.append({"email": cart.email, "error": str(e)})
+    
+    await db.commit()
+    
+    return {
+        "success": True,
+        "sent": sent_count,
+        "errors": errors
+    }
+
+@api_router.post("/admin/abandoned-carts/{cart_id}/send-reminder")
+async def send_single_reminder(
+    cart_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner: UserDB = Depends(get_owner)
+):
+    """Send reminder to a specific abandoned cart"""
+    result = await db.execute(
+        select(AbandonedCartDB).where(AbandonedCartDB.id == cart_id)
+    )
+    cart = result.scalar_one_or_none()
+    
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+    
+    # Build simplified email
+    items_list = ", ".join([item.get('name', 'Product') for item in (cart.items or [])[:3]])
+    
+    email_body = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h1 style="color: #c4ad94;">Complete Your Order</h1>
+        <p>Hi {cart.customer_name or 'there'},</p>
+        <p>Your cart with {items_list}... is still waiting!</p>
+        <p><strong>Total: ₹{float(cart.cart_total):,.0f}</strong></p>
+        <p><a href="https://annyajewellers.com/cart" style="background: #c4ad94; color: white; padding: 10px 20px; text-decoration: none;">Complete Purchase</a></p>
+    </div>
+    """
+    
+    await send_email_via_vercel(
+        to_email=cart.email,
+        subject="Complete your order - Annya Jewellers",
+        body=email_body
+    )
+    
+    cart.reminder_count += 1
+    cart.last_reminder_at = datetime.now(timezone.utc)
+    await db.commit()
+    
+    return {"success": True, "message": f"Reminder sent to {cart.email}"}
 
 # -------------------------------------------------------------------------
 # Inventory & Transfer Management (New)
@@ -3448,11 +4439,77 @@ async def create_purchase_order(
     await db.commit()
     return {"success": True, "id": str(new_po.id), "po_number": po_number}
 
-app.include_router(api_router)
+# ============================================
+# SEO: Sitemap Generation
+# ============================================
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/sitemap.xml")
+async def generate_sitemap(db: AsyncSession = Depends(get_db)):
+    """Generate dynamic sitemap.xml for SEO"""
+    from fastapi.responses import Response
+    from datetime import datetime
+    
+    base_url = os.getenv("FRONTEND_URL", "https://annyajewellers.com")
+    
+    # Static pages
+    static_pages = [
+        {"loc": "/", "priority": "1.0", "changefreq": "daily"},
+        {"loc": "/products", "priority": "0.9", "changefreq": "daily"},
+        {"loc": "/about", "priority": "0.7", "changefreq": "monthly"},
+        {"loc": "/contact", "priority": "0.7", "changefreq": "monthly"},
+        {"loc": "/faq", "priority": "0.6", "changefreq": "monthly"},
+        {"loc": "/book-appointment", "priority": "0.8", "changefreq": "weekly"},
+    ]
+    
+    # Get all active products
+    result = await db.execute(
+        select(ProductDB.id, ProductDB.updated_at)
+        .where(ProductDB.status == 'active')
+        .order_by(ProductDB.created_at.desc())
+        .limit(1000)
+    )
+    products = result.all()
+    
+    # Get all categories
+    cat_result = await db.execute(
+        select(ProductDB.category).distinct().where(ProductDB.status == 'active')
+    )
+    categories = [row[0] for row in cat_result.all() if row[0]]
+    
+    # Build XML
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    
+    # Add static pages
+    for page in static_pages:
+        xml += f"""  <url>
+    <loc>{base_url}{page["loc"]}</loc>
+    <changefreq>{page["changefreq"]}</changefreq>
+    <priority>{page["priority"]}</priority>
+  </url>\n"""
+    
+    # Add category pages
+    for cat in categories:
+        xml += f"""  <url>
+    <loc>{base_url}/products?category={cat.replace(" ", "%20")}</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>\n"""
+    
+    # Add product pages
+    for product_id, updated_at in products:
+        lastmod = updated_at.strftime("%Y-%m-%d") if updated_at else datetime.now().strftime("%Y-%m-%d")
+        xml += f"""  <url>
+    <loc>{base_url}/product/{product_id}</loc>
+    <lastmod>{lastmod}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.6</priority>
+  </url>\n"""
+    
+    xml += '</urlset>'
+    
+    return Response(content=xml, media_type="application/xml")
+
 # ============================================
 # INVENTORY RESERVATION SYSTEM
 # ============================================
@@ -3460,56 +4517,126 @@ if __name__ == "__main__":
 class ReservationRequest(BaseModel):
     product_id: str
     session_id: str
+    quantity: int = 1  # Support reserving multiple quantities
 
 @api_router.post("/cart/reserve")
 async def reserve_product(data: ReservationRequest, db: AsyncSession = Depends(get_db)):
     """
-    Atomically reserve a product for 5 minutes.
-    Prevents race conditions using specific row locking.
+    Reserve a product for a specific session.
+    Atomic locking prevents race conditions.
+    Uses separate reservations table for accurate tracking.
     """
     from datetime import datetime, timedelta, timezone
+    from sqlalchemy import func as sql_func
+    
+    logger.info(f"🔒 Attempting reservation for Product: {data.product_id}, Qty: {data.quantity}, Session: {data.session_id}")
+    
+    import uuid
+    try:
+        product_uuid = uuid.UUID(data.product_id)
+    except ValueError:
+        logger.error(f"❌ Invalid UUID format: {data.product_id}")
+        raise HTTPException(status_code=400, detail="Invalid product ID format")
+
     now = datetime.now(timezone.utc)
+    expiry = now + timedelta(minutes=5)
     
     try:
-        # Atomic Lock: Select for update
-        stmt = select(ProductDB).where(ProductDB.id == data.product_id).with_for_update()
+        # 1. Clean up expired reservations first
+        await db.execute(
+            ProductReservationDB.__table__.delete().where(
+                ProductReservationDB.expires_at < now
+            )
+        )
+        
+        # 2. Lock the product row
+        stmt = select(ProductDB).where(ProductDB.id == product_uuid).with_for_update()
         result = await db.execute(stmt)
         product = result.scalar_one_or_none()
         
         if not product:
             raise HTTPException(status_code=404, detail="Product not found")
         
-        # 1. Check if physically out of stock
-        if product.stock_quantity <= 0 or product.status != 'active':
+        # 3. Check if product is active
+        if product.status != 'active':
             return JSONResponse(
                 status_code=409, 
-                content={"success": False, "message": "Product is sold out"}
+                content={"success": False, "message": "Product is not available"}
             )
-            
-        # 2. Check if reserved by someone else
-        # Active reservation = (reserved_until > now) AND (reserved_by != this_session)
-        if product.reserved_until and product.reserved_until > now and product.reserved_by != data.session_id:
-            return JSONResponse(
-                status_code=409, 
-                content={"success": False, "message": "Product is currently reserved by another customer"}
-            )
-            
-        # 3. Apply Reservation
-        expiry = now + timedelta(minutes=5)
-        product.reserved_until = expiry
-        product.reserved_by = data.session_id
         
+        # 4. Check for existing reservation by this session
+        existing_res = await db.execute(
+            select(ProductReservationDB).where(
+                ProductReservationDB.product_id == data.product_id,
+                ProductReservationDB.session_id == data.session_id,
+                ProductReservationDB.expires_at > now
+            )
+        )
+        existing = existing_res.scalar_one_or_none()
+        
+        if existing:
+            # Already reserved by this session - extend the reservation
+            existing.expires_at = now + timedelta(minutes=5)
+            existing.quantity = data.quantity
+            await db.commit()
+            return {
+                "success": True,
+                "message": "Reservation extended",
+                "reserved_until": existing.expires_at.isoformat()
+            }
+        
+        # 5. Count active reservations for this product (from OTHER sessions)
+        reserved_count_result = await db.execute(
+            select(sql_func.coalesce(sql_func.sum(ProductReservationDB.quantity), 0))
+            .where(
+                ProductReservationDB.product_id == data.product_id,
+                ProductReservationDB.expires_at > now
+            )
+        )
+        total_reserved = int(reserved_count_result.scalar() or 0)
+        
+        # 6. Calculate available quantity
+        available = product.stock_quantity - total_reserved
+        
+        if available <= 0:
+            return JSONResponse(
+                status_code=409, 
+                content={"success": False, "message": "Product is sold out or all units are currently reserved"}
+            )
+        
+        if data.quantity > available:
+            return JSONResponse(
+                status_code=409, 
+                content={
+                    "success": False, 
+                    "message": f"Only {available} units available for reservation",
+                    "available": available
+                }
+            )
+        
+        # 7. Create new reservation
+        expiry = now + timedelta(minutes=5)
+        reservation = ProductReservationDB(
+            product_id=data.product_id,
+            session_id=data.session_id,
+            quantity=data.quantity,
+            expires_at=expiry
+        )
+        db.add(reservation)
         await db.commit()
         
         return {
             "success": True,
             "message": "Product reserved",
-            "reserved_until": expiry.isoformat()
+            "reserved_until": expiry.isoformat(),
+            "quantity_reserved": data.quantity
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
-        # logger.error(f"Reservation failed: {e}")
+        logger.error(f"Reservation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/cart/release")
@@ -3518,16 +4645,62 @@ async def release_product(data: ReservationRequest, db: AsyncSession = Depends(g
     Release a reservation manually (e.g., removed from cart)
     """
     try:
-        stmt = select(ProductDB).where(ProductDB.id == data.product_id).with_for_update()
-        result = await db.execute(stmt)
-        product = result.scalar_one_or_none()
-        
-        if product and product.reserved_by == data.session_id:
-            product.reserved_until = None
-            product.reserved_by = None
-            await db.commit()
-            
+        # Delete reservation for this session and product
+        await db.execute(
+            ProductReservationDB.__table__.delete().where(
+                ProductReservationDB.product_id == data.product_id,
+                ProductReservationDB.session_id == data.session_id
+            )
+        )
+        await db.commit()
         return {"success": True, "message": "Reservation released"}
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/cart/check-availability/{product_id}")
+async def check_product_availability(
+    product_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Check real-time availability of a product (stock minus active reservations)
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import func as sql_func
+    
+    now = datetime.now(timezone.utc)
+    
+    # Get product
+    result = await db.execute(select(ProductDB).where(ProductDB.id == product_id))
+    product = result.scalar_one_or_none()
+    
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    # Count active reservations
+    reserved_result = await db.execute(
+        select(sql_func.coalesce(sql_func.sum(ProductReservationDB.quantity), 0))
+        .where(
+            ProductReservationDB.product_id == product_id,
+            ProductReservationDB.expires_at > now
+        )
+    )
+    total_reserved = int(reserved_result.scalar() or 0)
+    
+    available = max(0, product.stock_quantity - total_reserved)
+    
+    return {
+        "productId": product_id,
+        "stockQuantity": product.stock_quantity,
+        "reserved": total_reserved,
+        "available": available,
+        "isSoldOut": available == 0
+    }
+
+# Include router AFTER all endpoints are defined
+app.include_router(api_router)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

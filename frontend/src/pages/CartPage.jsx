@@ -25,7 +25,11 @@ const CartPage = () => {
                 const res = await fetch(`${backendUrl}/api/cart/reserve`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ product_id: item.id, session_id: sessionId })
+                    body: JSON.stringify({
+                        product_id: item.id,
+                        session_id: sessionId,
+                        quantity: item.quantity
+                    })
                 });
                 const data = await res.json();
                 if (!res.ok) {
@@ -260,7 +264,7 @@ const CartPage = () => {
                                 disabled={reserving || cartItems.length === 0}
                                 className="w-full py-6 bg-[#c4ad94] hover:bg-[#b39d84] text-white text-lg disabled:opacity-50"
                             >
-                                {reserving ? "Reserving Items..." : "Proceed to Checkout"}
+                                {reserving ? "Processing..." : "Proceed to Checkout"}
                                 {!reserving && <ArrowRight className="ml-2 h-5 w-5" />}
                             </Button>
 

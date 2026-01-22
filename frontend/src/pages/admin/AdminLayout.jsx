@@ -4,6 +4,7 @@ import {
     LayoutDashboard,
     Package,
     ShoppingCart,
+    ShoppingBag,
     Warehouse,
     Truck,
     Users,
@@ -20,7 +21,8 @@ import {
     MapPin,
     HelpCircle,
     Layers,
-    Tag
+    Tag,
+    RotateCcw
 } from 'lucide-react';
 import { useOwner } from '../../context/OwnerContext';
 
@@ -108,6 +110,7 @@ const AdminLayout = () => {
     const navItems = [
         { path: '/admin', icon: LayoutDashboard, label: 'Dashboard', exact: true },
         { path: '/admin/orders', icon: ShoppingCart, label: 'Orders' },
+        { path: '/admin/returns', icon: RotateCcw, label: 'Returns' },
         { path: '/admin/products', icon: Package, label: 'Products' },
         {
             path: '/admin/inventory', icon: Warehouse, label: 'Inventory',
@@ -128,6 +131,7 @@ const AdminLayout = () => {
         { path: '/admin/customers', icon: Users, label: 'Customers' },
         { path: '/admin/marketing', icon: Megaphone, label: 'Marketing' },
         { path: '/admin/coupons', icon: Tag, label: 'Coupons' },
+        { path: '/admin/abandoned-carts', icon: ShoppingBag, label: 'Abandoned Carts' },
         { path: '/admin/analytics', icon: BarChart3, label: 'Analytics' },
         { path: '/admin/categories', icon: Layers, label: 'Categories' },
         { path: '/admin/settings', icon: Settings, label: 'Settings' },

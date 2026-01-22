@@ -5,21 +5,21 @@
       {
         "title": "Title",
         "items": [
-          "Solitaire Diamond Rings",
-          "Halo Diamond Rings",
-          "Three Stone Diamond Rings",
-          "Lab Grown Diamond Rings",
-          "All Engagement Rings"
+          "Rings 1",
+          "Rings 2",
+          "Rings 3",
+          "Rings 4",
+          "Rings 5"
         ]
       },
       {
         "title": "Title",
         "items": [
-          "Round",
-          "Oval",
-          "Emerald",
-          "Pear",
-          "Other"
+          "Rings 6",
+          "Rings 7",
+          "Rings 8",
+          "Rings 9",
+          "Rings 10"
         ]
       }
     ]
@@ -30,25 +30,21 @@
       {
         "title": "Title",
         "items": [
-          "Diamond Eternity Rings",
-          "Diamond Dress Rings",
-          "Diamond Pendants",
-          "Diamond Bracelets",
-          "Diamond Bangles",
-          "Diamond Earrings",
-          "Diamond Necklets",
-          "All Diamond Jewellery"
+          "Diamond 1",
+          "Diamond 2",
+          "Diamond 3",
+          "Diamond 4",
+          "Diamond 5"
         ]
       },
       {
         "title": "Title",
         "items": [
-          "Diamond",
-          "Sapphire",
-          "Emerald",
-          "Ruby",
-          "Pearl",
-          "All Gemstone Jewellery"
+          "Diamond 6",
+          "Diamond 7",
+          "Diamond 8",
+          "Diamond 9",
+          "Diamond 10"
         ]
       }
     ]
@@ -59,19 +55,21 @@
       {
         "title": "Title",
         "items": [
-          "Diamond Rings",
-          "White Gold Rings",
-          "Yellow Gold Rings",
-          "Platinum Rings"
+          "Wedding 1",
+          "Wedding 2",
+          "Wedding 3",
+          "Wedding 4",
+          "Wedding 5"
         ]
       },
       {
         "title": "Title",
         "items": [
-          "White Gold Rings",
-          "Yellow Gold Rings",
-          "Platinum Rings",
-          "All Wedding Rings"
+          "Wedding 6",
+          "Wedding 7",
+          "Wedding 8",
+          "Wedding 9",
+          "Wedding 10"
         ]
       }
     ]
@@ -82,19 +80,21 @@
       {
         "title": "Title",
         "items": [
-          "Gold Pendants",
-          "Gold Bracelets",
-          "Gold Bangles",
-          "Gold Earrings",
-          "Gold Necklets"
+          "Gold 1",
+          "Gold 2",
+          "Gold 3",
+          "Gold 4",
+          "Gold 5"
         ]
       },
       {
         "title": "Title",
         "items": [
-          "Gold Rings",
-          "Gold Chains",
-          "All Gold Jewellery"
+          "Gold 6",
+          "Gold 7",
+          "Gold 8",
+          "Gold 9",
+          "Gold 10"
         ]
       }
     ]
@@ -105,17 +105,21 @@
       {
         "title": "Title",
         "items": [
-          "Silver Rings",
-          "Silver Pendants",
-          "Silver Bracelets"
+          "Silver 1",
+          "Silver 2",
+          "Silver 3",
+          "Silver 4",
+          "Silver 5"
         ]
       },
       {
         "title": "Title",
         "items": [
-          "Silver Earrings",
-          "Silver Necklets",
-          "All Silver Jewellery"
+          "Silver 6",
+          "Silver 7",
+          "Silver 8",
+          "Silver 9",
+          "Silver 10"
         ]
       }
     ]
