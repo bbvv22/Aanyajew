@@ -24,10 +24,6 @@ const VendorsPage = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddModal, setShowAddModal] = useState(false);
 
-    useEffect(() => {
-        fetchVendors();
-    }, []);
-
     const fetchVendors = async () => {
         setLoading(true);
         try {
@@ -42,6 +38,11 @@ const VendorsPage = () => {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchVendors();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const filteredVendors = vendors.filter(v =>
         v.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||

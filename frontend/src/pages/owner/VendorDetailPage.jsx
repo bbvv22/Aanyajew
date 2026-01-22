@@ -25,45 +25,44 @@ const VendorDetailPage = () => {
     const [activeTab, setActiveTab] = useState('overview');
 
     useEffect(() => {
+        const fetchData = async () => {
+            setLoading(true);
+            try {
+                const [vendorRes, productsRes, ordersRes] = await Promise.all([
+                    axios.get(`${backendUrl}/api/admin/vendors/${id}`, { headers: getAuthHeader() }),
+                    axios.get(`${backendUrl}/api/admin/products`, { headers: getAuthHeader() }),
+                    axios.get(`${backendUrl}/api/admin/purchase-orders`, { headers: getAuthHeader() }) // Fetch all and filter
+                ]);
+
+                setVendor(vendorRes.data);
+
+                // Client-side filtering
+                const vendorProducts = productsRes.data.filter(p => p.vendorId === id || p.vendor_name === vendorRes.data.name);
+                // Note: Product might store vendorId OR vendorName depending on implementation. 
+                // My server.py create_product uses vendorId.
+                // But let's check what product data looks like. It has vendorId.
+
+                setProducts(vendorProducts);
+
+                const vendorOrders = ordersRes.data.filter(po => po.vendor_name === vendorRes.data.name);
+                // PO stores vendor_name and vendor_id? 
+                // My PO endpoint returns vendor_name?
+                // Wait, PO endpoint returns: id, po_number, vendor_name...
+                // It DOES NOT return vendor_id in the list response.
+                // But it filters by vendor name hopefully unique enough or I should update endpoint.
+                // Ideally I should update PO endpoint to return vendor_id too.
+                // But name matching is okay for now if names are unique.
+
+                setOrders(vendorOrders);
+
+            } catch (error) {
+                console.error("Error fetching vendor details:", error);
+            } finally {
+                setLoading(false);
+            }
+        };
         fetchData();
-    }, [id]);
-
-    const fetchData = async () => {
-        setLoading(true);
-        try {
-            const [vendorRes, productsRes, ordersRes] = await Promise.all([
-                axios.get(`${backendUrl}/api/admin/vendors/${id}`, { headers: getAuthHeader() }),
-                axios.get(`${backendUrl}/api/admin/products`, { headers: getAuthHeader() }),
-                axios.get(`${backendUrl}/api/admin/purchase-orders`, { headers: getAuthHeader() }) // Fetch all and filter
-            ]);
-
-            setVendor(vendorRes.data);
-
-            // Client-side filtering
-            const vendorProducts = productsRes.data.filter(p => p.vendorId === id || p.vendor_name === vendorRes.data.name);
-            // Note: Product might store vendorId OR vendorName depending on implementation. 
-            // My server.py create_product uses vendorId.
-            // But let's check what product data looks like. It has vendorId.
-
-            setProducts(vendorProducts);
-
-            const vendorOrders = ordersRes.data.filter(po => po.vendor_name === vendorRes.data.name);
-            // PO stores vendor_name and vendor_id? 
-            // My PO endpoint returns vendor_name?
-            // Wait, PO endpoint returns: id, po_number, vendor_name...
-            // It DOES NOT return vendor_id in the list response.
-            // But it filters by vendor name hopefully unique enough or I should update endpoint.
-            // Ideally I should update PO endpoint to return vendor_id too.
-            // But name matching is okay for now if names are unique.
-
-            setOrders(vendorOrders);
-
-        } catch (error) {
-            console.error("Error fetching vendor details:", error);
-        } finally {
-            setLoading(false);
-        }
-    };
+    }, [id, backendUrl, getAuthHeader]);
 
     if (loading) {
         return (
