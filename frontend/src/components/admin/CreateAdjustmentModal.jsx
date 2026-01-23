@@ -23,6 +23,7 @@ const CreateAdjustmentModal = ({ isOpen, onClose, onAdjustmentCreated }) => {
             fetchProducts();
             resetForm();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen]);
 
     const resetForm = () => {

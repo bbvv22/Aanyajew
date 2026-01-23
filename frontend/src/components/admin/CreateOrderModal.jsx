@@ -38,6 +38,7 @@ const CreateOrderModal = ({ isOpen, onClose, onOrderCreated }) => {
         if (isOpen) {
             fetchProducts();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen]);
 
     // Smart Payment Status Logic
@@ -362,8 +363,8 @@ const CreateOrderModal = ({ isOpen, onClose, onOrderCreated }) => {
                                         key={method}
                                         onClick={() => setPaymentMethod(method)}
                                         className={`py-2 px-3 text-xs sm:text-sm rounded-lg border transition-all ${paymentMethod === method
-                                                ? 'bg-amber-50 border-amber-500 text-amber-700'
-                                                : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                                            ? 'bg-amber-50 border-amber-500 text-amber-700'
+                                            : 'border-gray-200 text-gray-600 hover:bg-gray-50'
                                             }`}
                                     >
                                         {method}

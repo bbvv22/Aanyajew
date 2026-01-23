@@ -25,12 +25,14 @@ const CreatePurchaseOrderModal = ({ isOpen, onClose, onPOCreated }) => {
             fetchVendors();
             resetForm();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen]);
 
     useEffect(() => {
         if (showProductSearch) {
             fetchProducts();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showProductSearch]);
 
     const resetForm = () => {

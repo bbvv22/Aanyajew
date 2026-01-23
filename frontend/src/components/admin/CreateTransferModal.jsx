@@ -25,6 +25,7 @@ const CreateTransferModal = ({ isOpen, onClose, onTransferCreated }) => {
             fetchLocations();
             fetchProducts();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen]);
 
     // Filter products
