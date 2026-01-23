@@ -322,26 +322,35 @@ const Header = ({ isHome = true }) => {
                         <div className="font-medium text-gray-800 mb-2">{item.name}</div>
                         <div className="pl-4 space-y-2 border-l-2 border-gray-100">
                           <Link
-                            to={`/products?search=${encodeURIComponent(item.name)}`}
-                            className="block text-sm text-gray-600 py-1"
+                            to={`/products?category=${encodeURIComponent(item.name)}`}
+                            className="block text-sm text-gray-600 py-1 font-medium"
                             onClick={() => setMobileMenuOpen(false)}
                           >
                             View All {item.name}
                           </Link>
-                          {/* Flattening columns for mobile for simplicity */}
-                          {item.columns.flatMap(col => col.items).slice(0, 5).map((subItem, idx) => (
-                            <Link
-                              key={idx}
-                              to={
-                                subItem.startsWith('All ')
-                                  ? `/products?category=${encodeURIComponent(item.name)}`
-                                  : `/products?category=${encodeURIComponent(item.name)}&subcategory=${encodeURIComponent(subItem)}`
-                              }
-                              className="block text-sm text-gray-500 py-1"
-                              onClick={() => setMobileMenuOpen(false)}
-                            >
-                              {subItem}
-                            </Link>
+                          {/* Iterate through all columns and items without limits to match desktop */}
+                          {item.columns.map((col, colIdx) => (
+                            <div key={colIdx} className="space-y-1">
+                              {col.title && (
+                                <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mt-2 mb-1">
+                                  {col.title}
+                                </div>
+                              )}
+                              {col.items.map((subItem, itemIdx) => (
+                                <Link
+                                  key={itemIdx}
+                                  to={
+                                    subItem.startsWith('All ')
+                                      ? `/products?category=${encodeURIComponent(item.name)}`
+                                      : `/products?category=${encodeURIComponent(item.name)}&subcategory=${encodeURIComponent(subItem)}`
+                                  }
+                                  className="block text-sm text-gray-500 py-1 hover:text-[#c4ad94]"
+                                  onClick={() => setMobileMenuOpen(false)}
+                                >
+                                  {subItem}
+                                </Link>
+                              ))}
+                            </div>
                           ))}
                         </div>
                       </div>
