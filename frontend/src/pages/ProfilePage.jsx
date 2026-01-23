@@ -104,6 +104,7 @@ const ProfilePage = () => {
         } else if (activeTab === "addresses") {
             fetchAddresses();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab]);
 
     const fetchOrders = async () => {

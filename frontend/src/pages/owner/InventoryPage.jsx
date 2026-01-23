@@ -35,10 +35,6 @@ const InventoryPage = () => {
         stockoutCount: 0
     });
 
-    useEffect(() => {
-        fetchData();
-    }, []);
-
     const fetchData = async () => {
         setLoading(true);
         try {
@@ -76,6 +72,11 @@ const InventoryPage = () => {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchData();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const formatCurrency = (value) => {
         return new Intl.NumberFormat('en-IN', {

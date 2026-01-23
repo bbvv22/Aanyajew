@@ -12,10 +12,6 @@ const LedgerPage = () => {
     const [filterType, setFilterType] = useState('all');
     const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
 
-    useEffect(() => {
-        fetchLedger();
-    }, []);
-
     const fetchLedger = async () => {
         try {
             const response = await axios.get(`${backendUrl}/api/admin/inventory/ledger`, {
@@ -29,6 +25,11 @@ const LedgerPage = () => {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchLedger();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const getEventIcon = (type) => {
         switch (type) {

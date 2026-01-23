@@ -26,6 +26,7 @@ const ReturnsAdmin = () => {
 
     useEffect(() => {
         fetchReturns();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleAction = async (returnId, action) => {

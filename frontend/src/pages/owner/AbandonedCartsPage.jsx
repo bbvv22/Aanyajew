@@ -61,10 +61,12 @@ const AbandonedCartsPage = () => {
             }
         };
         fetchSettings();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
         fetchCarts();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [statusFilter, reminderTiming]);
 
     const saveReminderSettings = async (minutes) => {
@@ -217,8 +219,8 @@ const AbandonedCartsPage = () => {
                                 onClick={() => saveReminderSettings(mins)}
                                 disabled={savingSettings}
                                 className={`px-4 py-2 rounded-lg text-sm font-medium transition ${reminderTiming === mins
-                                        ? "bg-[#c4ad94] text-white shadow"
-                                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                                    ? "bg-[#c4ad94] text-white shadow"
+                                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                                     }`}
                             >
                                 {savingSettings && reminderTiming === mins ? (

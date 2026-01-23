@@ -52,6 +52,7 @@ const AdminLayout = () => {
         fetchNotifications();
         const interval = setInterval(fetchNotifications, 300000); // Poll every 5 mins
         return () => clearInterval(interval);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const fetchNotifications = async () => {

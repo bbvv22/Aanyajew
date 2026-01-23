@@ -35,6 +35,7 @@ const CouponsPage = () => {
     useEffect(() => {
         fetchCoupons();
         fetchProducts();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const fetchCoupons = async () => {

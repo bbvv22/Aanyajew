@@ -45,10 +45,6 @@ const MarketingPage = () => {
         { label: 'Bounce Rate', value: '0%', change: '0%', positive: true, icon: MousePointerClick }
     ]);
 
-    useEffect(() => {
-        fetchAnalytics();
-    }, [dateRange]);
-
     const fetchAnalytics = async () => {
         try {
             setLoading(true);
@@ -97,6 +93,11 @@ const MarketingPage = () => {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchAnalytics();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [dateRange]);
 
     return (
         <div className="space-y-6">

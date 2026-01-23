@@ -55,10 +55,6 @@ const OrdersPage = () => {
         { id: 'returned', label: 'Returned', count: 0, icon: XCircle }
     ];
 
-    useEffect(() => {
-        fetchOrders();
-    }, [activeTab]);
-
     const fetchOrders = async () => {
         setLoading(true);
         try {
@@ -75,6 +71,11 @@ const OrdersPage = () => {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchOrders();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab]);
 
     const handleUpdateStatus = async () => {
         if (!selectedOrder || !newStatus) return;

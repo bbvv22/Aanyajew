@@ -11,6 +11,7 @@ const StockAlertsPage = () => {
 
     useEffect(() => {
         fetchAlerts();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const fetchAlerts = async () => {

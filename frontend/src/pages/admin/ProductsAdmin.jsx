@@ -66,6 +66,7 @@ const ProductsAdmin = () => {
 
     useEffect(() => {
         fetchProducts();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const fetchProducts = async () => {
@@ -500,8 +501,8 @@ const ProductsAdmin = () => {
                                             }
                                         }}
                                         className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors ${product.status === 'active'
-                                                ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                            ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                                             }`}
                                     >
                                         {product.status === 'active' ? 'Active' : 'Inactive'}

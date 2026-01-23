@@ -39,10 +39,6 @@ const PurchaseOrdersPage = () => {
         { id: 'closed', label: 'Closed', icon: XCircle }
     ];
 
-    useEffect(() => {
-        fetchPurchaseOrders();
-    }, [activeTab]);
-
     const fetchPurchaseOrders = async () => {
         setLoading(true);
         try {
@@ -59,6 +55,11 @@ const PurchaseOrdersPage = () => {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchPurchaseOrders();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab]);
 
     const getStatusBadge = (status) => {
         const styles = {

@@ -47,6 +47,7 @@ const AdminDashboard = () => {
         // Debounce fetching if using custom dates to avoid rapid calls while typing
         if (dateRange === 'custom' && (!startDate || !endDate)) return;
         fetchDashboardData();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [dateRange, context?.selectedLocation, startDate, endDate]);
 
     const fetchDashboardData = async () => {

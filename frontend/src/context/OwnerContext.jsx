@@ -19,6 +19,7 @@ export const OwnerProvider = ({ children }) => {
 
     useEffect(() => {
         checkOwnerStatus();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const checkOwnerStatus = async () => {

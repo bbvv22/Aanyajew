@@ -37,10 +37,6 @@ const SettingsPage = () => {
         { id: 'security', label: 'Security', icon: Shield }
     ];
 
-    useEffect(() => {
-        fetchSettings();
-    }, []);
-
     const fetchSettings = async () => {
         try {
             const response = await axios.get(`${backendUrl}/api/admin/settings`, {
@@ -56,6 +52,11 @@ const SettingsPage = () => {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchSettings();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const handleSave = async () => {
         try {

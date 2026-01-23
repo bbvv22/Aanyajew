@@ -11,10 +11,6 @@ const TransfersPage = () => {
     const [loading, setLoading] = useState(true);
     const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
-    useEffect(() => {
-        fetchTransfers();
-    }, []);
-
     const fetchTransfers = async () => {
         try {
             const response = await axios.get(`${backendUrl}/api/admin/transfers`, {
@@ -28,6 +24,11 @@ const TransfersPage = () => {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        fetchTransfers();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const getStatusIcon = (status) => {
         switch (status) {
