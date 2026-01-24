@@ -18,7 +18,7 @@ const CategorySection = () => {
       try {
         const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8006';
         // Fetch a few products to use their images
-        const response = await axios.get(`${backendUrl}/api/products`);
+        const response = await axios.get(`${backendUrl}/api/products/summary?limit=50`);
         const products = response.data;
 
         // Map static categories to random product images

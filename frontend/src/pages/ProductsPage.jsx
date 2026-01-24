@@ -182,6 +182,7 @@ const ProductsPage = () => {
                                             checked={selectedCategory === "all"}
                                             onChange={() => {
                                                 setSearchParams({}); // Clear all params
+                                                setShowFilters(false);
                                             }}
                                             className="text-[#c4ad94] focus:ring-[#c4ad94]"
                                         />
@@ -193,9 +194,10 @@ const ProductsPage = () => {
                                                 type="radio"
                                                 name="category"
                                                 checked={(selectedCategory || "").trim().toLowerCase() === (catWrapper.name || "").trim().toLowerCase()}
-                                                onChange={() => {
-                                                    setSearchParams({ category: catWrapper.name });
-                                                }}
+                                            onChange={() => {
+                                                setSearchParams({ category: catWrapper.name });
+                                                setShowFilters(false);
+                                            }}
                                                 className="text-[#c4ad94] focus:ring-[#c4ad94]"
                                             />
                                             <span className="text-sm text-gray-600 capitalize">{catWrapper.name}</span>
@@ -214,9 +216,12 @@ const ProductsPage = () => {
                                                 type="radio"
                                                 name="subcategory"
                                                 checked={selectedSubCategory === "all"}
-                                                onChange={() => setSearchParams({ category: selectedCategory })}
-                                                className="text-[#c4ad94] focus:ring-[#c4ad94]"
-                                            />
+                                            onChange={() => {
+                                                setSearchParams({ category: selectedCategory });
+                                                setShowFilters(false);
+                                            }}
+                                            className="text-[#c4ad94] focus:ring-[#c4ad94]"
+                                        />
                                             <span className="text-sm text-gray-600">All {selectedCategory}</span>
                                         </label>
                                         {currentSubCategories.map((sub) => (
@@ -225,9 +230,12 @@ const ProductsPage = () => {
                                                     type="radio"
                                                     name="subcategory"
                                                     checked={(selectedSubCategory || "").trim().toLowerCase() === (sub || "").trim().toLowerCase()}
-                                                    onChange={() => setSearchParams({ category: selectedCategory, subcategory: sub })}
-                                                    className="text-[#c4ad94] focus:ring-[#c4ad94]"
-                                                />
+                                            onChange={() => {
+                                                setSearchParams({ category: selectedCategory, subcategory: sub });
+                                                setShowFilters(false);
+                                            }}
+                                            className="text-[#c4ad94] focus:ring-[#c4ad94]"
+                                        />
                                                 <span className="text-sm text-gray-600 capitalize">{sub}</span>
                                             </label>
                                         ))}

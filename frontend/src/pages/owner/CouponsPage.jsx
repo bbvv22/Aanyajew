@@ -51,7 +51,7 @@ const CouponsPage = () => {
 
     const fetchProducts = async () => {
         try {
-            const response = await axios.get(`${backendUrl}/api/products`);
+            const response = await axios.get(`${backendUrl}/api/products/summary?limit=1000`);
             setProducts(response.data);
         } catch (error) {
             console.error('Error fetching products:', error);

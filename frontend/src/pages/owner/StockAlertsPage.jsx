@@ -17,7 +17,7 @@ const StockAlertsPage = () => {
     const fetchAlerts = async () => {
         try {
             // Fetch products with low stock
-            const response = await axios.get(`${backendUrl}/api/admin/products`, { headers: getAuthHeader() });
+            const response = await axios.get(`${backendUrl}/api/admin/products/summary?limit=1000`, { headers: getAuthHeader() });
             const products = response.data;
 
             // Filter to low stock and out of stock

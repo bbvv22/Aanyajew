@@ -22,17 +22,10 @@ const SearchResultsPage = () => {
             setLoading(true);
             try {
                 const backendUrl = process.env.REACT_APP_BACKEND_URL || "http://localhost:8006";
-                const response = await axios.get(`${backendUrl}/api/products`);
-
-                // Filter products by search query
-                const filtered = response.data.filter(
-                    (p) =>
-                        p.name.toLowerCase().includes(query.toLowerCase()) ||
-                        p.description.toLowerCase().includes(query.toLowerCase()) ||
-                        p.category.toLowerCase().includes(query.toLowerCase())
+                const response = await axios.get(
+                    `${backendUrl}/api/products?search=${encodeURIComponent(query)}&limit=200`
                 );
-
-                setProducts(filtered);
+                setProducts(response.data);
             } catch (error) {
                 console.error("Error searching products:", error);
             } finally {

@@ -52,7 +52,7 @@ const CreateOrderModal = ({ isOpen, onClose, onOrderCreated }) => {
 
     const fetchProducts = async () => {
         try {
-            const response = await axios.get(`${backendUrl}/api/admin/products`, {
+            const response = await axios.get(`${backendUrl}/api/admin/products/summary`, {
                 headers: getAuthHeader()
             });
             setProducts(response.data);
@@ -64,8 +64,8 @@ const CreateOrderModal = ({ isOpen, onClose, onOrderCreated }) => {
     useEffect(() => {
         if (searchTerm) {
             const results = products.filter(p =>
-                p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                p.sku.toLowerCase().includes(searchTerm.toLowerCase())
+                (p.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (p.sku || '').toLowerCase().includes(searchTerm.toLowerCase())
             );
             setSearchResults(results.slice(0, 5));
         } else {
@@ -82,7 +82,7 @@ const CreateOrderModal = ({ isOpen, onClose, onOrderCreated }) => {
                 product_id: product.id,
                 name: product.name,
                 price: product.price,
-                stock: product.stock_quantity,
+                stock: product.stockQuantity,
                 quantity: 1
             }]);
         }
@@ -229,7 +229,7 @@ const CreateOrderModal = ({ isOpen, onClose, onOrderCreated }) => {
                                         >
                                             <div>
                                                 <p className="font-medium text-gray-800">{product.name}</p>
-                                                <p className="text-xs text-gray-500">SKU: {product.sku} | Stock: {product.stock_quantity}</p>
+                                                <p className="text-xs text-gray-500">SKU: {product.sku} | Stock: {product.stockQuantity}</p>
                                             </div>
                                             <span className="font-semibold text-amber-600">₹{product.price}</span>
                                         </button>

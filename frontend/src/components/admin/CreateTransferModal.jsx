@@ -32,8 +32,8 @@ const CreateTransferModal = ({ isOpen, onClose, onTransferCreated }) => {
     useEffect(() => {
         if (searchTerm) {
             const results = products.filter(p =>
-                p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                p.sku.toLowerCase().includes(searchTerm.toLowerCase())
+                (p.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (p.sku || '').toLowerCase().includes(searchTerm.toLowerCase())
             );
             setSearchResults(results.slice(0, 5));
         } else {
@@ -59,7 +59,7 @@ const CreateTransferModal = ({ isOpen, onClose, onTransferCreated }) => {
 
     const fetchProducts = async () => {
         try {
-            const response = await axios.get(`${backendUrl}/api/admin/products`, {
+            const response = await axios.get(`${backendUrl}/api/admin/products/summary`, {
                 headers: getAuthHeader()
             });
             setProducts(response.data);

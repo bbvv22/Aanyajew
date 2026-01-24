@@ -30,14 +30,14 @@ const VendorDetailPage = () => {
             try {
                 const [vendorRes, productsRes, ordersRes] = await Promise.all([
                     axios.get(`${backendUrl}/api/admin/vendors/${id}`, { headers: getAuthHeader() }),
-                    axios.get(`${backendUrl}/api/admin/products`, { headers: getAuthHeader() }),
+                    axios.get(`${backendUrl}/api/admin/products/summary?limit=1000`, { headers: getAuthHeader() }),
                     axios.get(`${backendUrl}/api/admin/purchase-orders`, { headers: getAuthHeader() }) // Fetch all and filter
                 ]);
 
                 setVendor(vendorRes.data);
 
                 // Client-side filtering
-                const vendorProducts = productsRes.data.filter(p => p.vendorId === id || p.vendor_name === vendorRes.data.name);
+                const vendorProducts = productsRes.data.filter(p => p.vendorId === id || p.vendorName === vendorRes.data.name);
                 // Note: Product might store vendorId OR vendorName depending on implementation. 
                 // My server.py create_product uses vendorId.
                 // But let's check what product data looks like. It has vendorId.

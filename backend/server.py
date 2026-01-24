@@ -10,7 +10,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HT
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker, selectinload
 from sqlalchemy.future import select
-from sqlalchemy import text, func, update, delete, or_, and_
+from sqlalchemy import text, func, update, delete, or_, and_, cast, String
 from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Union, Dict, Any
@@ -103,6 +103,7 @@ async def send_automatic_abandoned_cart_emails():
                 .limit(20)  # Process 20 at a time
             )
             carts = result.scalars().all()
+            logger.info(f"Abandoned cart scheduler: {len(carts)} eligible carts found (cutoff {minutes} mins)")
             
             for cart in carts:
                 try:
@@ -162,11 +163,14 @@ async def send_automatic_abandoned_cart_emails():
                     """
                     
                     # Send email
-                    await send_email_via_vercel(
+                    sent = await send_email_via_vercel(
                         to_email=cart.email,
                         subject="✨ Your cart is waiting for you - Annya Jewellers",
                         body=email_body
                     )
+                    if not sent:
+                        logger.error(f"Failed to send abandoned cart reminder to {cart.email}")
+                        continue
                     
                     # Update reminder tracking
                     cart.reminder_count += 1
@@ -274,44 +278,11 @@ async def send_email(to_email: str, subject: str, body: str, is_html: bool = Fal
     """
     pass
 
-async def send_email_via_vercel(to_email: str, subject: str = None, body: str = None, otp: str = None, brand: str = "Annya Jewellers"):
+async def send_email_via_vercel(to_email: str, subject: str = None, body: str = None, otp: str = None, brand: str = "Annya Jewellers") -> bool:
     """
-    Send email via Vercel Serverless Function OR SMTP Fallback.
+    Send email via SMTP (Zoho).
+    Returns True on success, False on failure.
     """
-    import httpx
-    
-    mailer_url = os.environ.get("MAILER_URL") 
-    internal_key = os.environ.get("INTERNAL_KEY")
-    
-    # Priority 1: Vercel Microservice
-    if mailer_url and internal_key:
-        payload = {
-            "to": to_email,
-            "brand": brand
-        }
-        if otp:
-            payload["otp"] = otp
-        if subject:
-            payload["subject"] = subject
-        if body:
-            payload["html"] = body
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    mailer_url,
-                    headers={"x-internal-key": internal_key},
-                    json=payload,
-                )
-                response.raise_for_status()
-                logger.info(f"Email sent via Vercel to {to_email}")
-                return
-        except Exception as e:
-            logger.error(f"Failed to call Vercel Mailer: {e}")
-            # Fall through to SMTP if Vercel fails? Maybe not, could lead to dupes. 
-            # For now, let's assume if Vercel is configured, we only try that.
-    
-    # Priority 2: SMTP Fallback
     smtp_email = os.environ.get("SMTP_EMAIL")
     smtp_user = os.environ.get("SMTP_USER") # Some envs use this
     smtp_sender = smtp_email or smtp_user
@@ -350,14 +321,15 @@ async def send_email_via_vercel(to_email: str, subject: str = None, body: str = 
 
             await asyncio.to_thread(send_sync)
             logger.info(f"Email sent via SMTP to {to_email}")
-            return
+            return True
         except Exception as e:
             logger.error(f"Failed to send SMTP email: {e}")
             # Don't re-raise in background tasks usually, but for now we log it
             # If this is critical (like OTP), the caller might need to know, but this function handles fallbacks.
-            pass
+            return False
 
-    logger.error("No email configuration found. Checked MAILER_URL and SMTP_USER/PASSWORD.")
+    logger.error("No email configuration found. Checked SMTP_USER/SMTP_PASSWORD.")
+    return False
 
 # ============================================
 # AUTHENTICATION
@@ -491,6 +463,58 @@ async def get_products(
         "certification": p.certification,
         "createdAt": p.created_at.isoformat() if p.created_at else None
     } for p in products]
+
+@api_router.get("/products/summary")
+async def get_products_summary(
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(50, le=500),
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get lightweight product list for faster UI renders"""
+    query = select(
+        ProductDB.id,
+        ProductDB.name,
+        ProductDB.category,
+        ProductDB.subcategory,
+        ProductDB.selling_price,
+        ProductDB.image,
+        ProductDB.stock_quantity
+    ).where(ProductDB.status == 'active')
+
+    if category:
+        query = query.where(ProductDB.category == category)
+
+    if subcategory:
+        query = query.where(ProductDB.subcategory == subcategory)
+
+    if search:
+        search_filter = or_(
+            ProductDB.name.ilike(f"%{search}%"),
+            ProductDB.description.ilike(f"%{search}%"),
+            ProductDB.category.ilike(f"%{search}%"),
+            ProductDB.sku.ilike(f"%{search}%")
+        )
+        query = query.where(search_filter)
+
+    query = query.limit(limit).offset(offset)
+    result = await db.execute(query)
+    rows = result.all()
+
+    return [
+        {
+            "id": str(row.id),
+            "name": row.name,
+            "category": row.category,
+            "subcategory": row.subcategory,
+            "price": float(row.selling_price),
+            "image": row.image,
+            "inStock": (row.stock_quantity or 0) > 0
+        }
+        for row in rows
+    ]
 
 @api_router.get("/products/{product_id}")
 async def get_product(product_id: str, db: AsyncSession = Depends(get_db)):
@@ -1201,44 +1225,49 @@ async def update_navigation(
 
 @api_router.get("/admin/customers")
 async def get_customers(
+    limit: int = Query(100, le=500),
+    offset: int = 0,
     owner: UserDB = Depends(get_owner),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get all customers (users with role='customer')"""
-    result = await db.execute(
-        select(UserDB).where(UserDB.role == 'customer')
-        .order_by(UserDB.created_at.desc())
+    """Get customers with aggregated order stats"""
+    stats_subq = (
+        select(
+            OrderDB.customer_id.label("customer_id"),
+            func.count().label("order_count"),
+            func.coalesce(func.sum(OrderDB.grand_total), 0).label("total_spent")
+        )
+        .group_by(OrderDB.customer_id)
+        .subquery()
     )
-    customers = result.scalars().all()
-    
-    # Get order counts and total spent for each customer
-    customer_list = []
-    for customer in customers:
-        # Count orders
-        order_count_result = await db.execute(
-            select(func.count()).select_from(OrderDB)
-            .where(OrderDB.customer_id == str(customer.id))
+
+    stmt = (
+        select(
+            UserDB,
+            stats_subq.c.order_count,
+            stats_subq.c.total_spent
         )
-        order_count = order_count_result.scalar() or 0
-        
-        # Sum total spent
-        total_spent_result = await db.execute(
-            select(func.sum(OrderDB.grand_total))
-            .where(OrderDB.customer_id == str(customer.id))
-        )
-        total_spent = total_spent_result.scalar() or 0
-        
-        customer_list.append({
-            "id": str(customer.id),
-            "name": customer.full_name,
-            "email": customer.email,
-            "phone": customer.phone,
-            "orders": order_count,
-            "totalSpent": float(total_spent),
-            "createdAt": customer.created_at.isoformat() if customer.created_at else None
-        })
-    
-    return customer_list
+        .outerjoin(stats_subq, stats_subq.c.customer_id == cast(UserDB.id, String))
+        .where(UserDB.role == 'customer')
+        .order_by(UserDB.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    return [
+        {
+            "id": str(user.id),
+            "name": user.full_name,
+            "email": user.email,
+            "phone": user.phone,
+            "orders": int(order_count or 0),
+            "totalSpent": float(total_spent or 0),
+            "createdAt": user.created_at.isoformat() if user.created_at else None
+        }
+        for user, order_count, total_spent in rows
+    ]
 
 class CustomerCreate(BaseModel):
     name: str
@@ -2287,12 +2316,16 @@ async def export_products(
 
 @api_router.get("/admin/products")
 async def get_products(
+    limit: Optional[int] = Query(None, le=1000),
+    offset: int = 0,
     owner: UserDB = Depends(get_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """Get all products for admin dashboard"""
     # Fetch products with newest first
     stmt = select(ProductDB).order_by(ProductDB.created_at.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     result = await db.execute(stmt)
     products = result.scalars().all()
 
@@ -2353,6 +2386,53 @@ async def get_products(
             "rating": 5.0 # Placeholder
         }
         for p in products
+    ]
+
+@api_router.get("/admin/products/summary")
+async def get_products_summary_admin(
+    limit: int = Query(200, le=1000),
+    offset: int = 0,
+    owner: UserDB = Depends(get_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get lightweight product list for admin dropdowns"""
+    stmt = (
+        select(
+            ProductDB.id,
+            ProductDB.sku,
+            ProductDB.name,
+            ProductDB.selling_price,
+            ProductDB.total_cost,
+            ProductDB.image,
+            ProductDB.category,
+            ProductDB.subcategory,
+            ProductDB.stock_quantity,
+            ProductDB.low_stock_threshold,
+            ProductDB.vendor_id,
+            ProductDB.vendor_name
+        )
+        .order_by(ProductDB.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+    return [
+        {
+            "id": str(row.id),
+            "sku": row.sku,
+            "name": row.name,
+            "price": float(row.selling_price),
+            "totalCost": float(row.total_cost) if row.total_cost else 0.0,
+            "image": row.image,
+            "category": row.category,
+            "subcategory": row.subcategory,
+            "stockQuantity": row.stock_quantity,
+            "lowStockThreshold": row.low_stock_threshold,
+            "vendorId": row.vendor_id,
+            "vendorName": row.vendor_name
+        }
+        for row in rows
     ]
 
 @api_router.put("/admin/products/{product_id}")
@@ -3925,10 +4005,7 @@ async def get_abandoned_carts(
     query = select(AbandonedCartDB).order_by(AbandonedCartDB.updated_at.desc())
     
     if status == "active":
-        query = query.where(
-            AbandonedCartDB.status == 'active',
-            AbandonedCartDB.updated_at < cutoff
-        )
+        query = query.where(AbandonedCartDB.status == 'active')
     elif status == "converted":
         query = query.where(AbandonedCartDB.status == 'converted')
     # 'all' = no filter
@@ -3947,11 +4024,27 @@ async def get_abandoned_carts(
             "reminderCount": c.reminder_count,
             "lastReminderAt": c.last_reminder_at.isoformat() if c.last_reminder_at else None,
             "status": c.status,
+            "eligibleForReminder": bool(c.updated_at and c.updated_at < cutoff and c.reminder_count < 3),
             "createdAt": c.created_at.isoformat() if c.created_at else None,
             "updatedAt": c.updated_at.isoformat() if c.updated_at else None
         }
         for c in carts
     ]
+
+@api_router.post("/admin/email/test")
+async def send_test_email(
+    email: EmailStr = Body(..., embed=True),
+    owner: UserDB = Depends(get_owner)
+):
+    """Send a test email using SMTP configuration."""
+    sent = await send_email_via_vercel(
+        to_email=email,
+        subject="Test Email - Annya Jewellers",
+        body="<p>This is a test email from the SMTP configuration.</p>"
+    )
+    if not sent:
+        raise HTTPException(status_code=500, detail="SMTP send failed. Check server logs for details.")
+    return {"success": True}
 
 @api_router.post("/admin/abandoned-carts/send-reminders")
 async def send_abandoned_cart_reminders(

@@ -46,7 +46,7 @@ const Header = ({ isHome = true }) => {
     const fetchFeaturedProducts = async () => {
       try {
         const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8006';
-        const response = await axios.get(`${backendUrl} /api/products`);
+        const response = await axios.get(`${backendUrl}/api/products/summary?limit=200`);
         const products = response.data;
 
         // Organize products by category keywords
@@ -98,108 +98,7 @@ const Header = ({ isHome = true }) => {
   };
 
 
-  const [navItems, setNavItems] = useState([
-    {
-      name: 'ENGAGEMENT RINGS',
-      columns: [
-        {
-          title: null,
-          items: [
-            'Solitaire Diamond Rings',
-            'Halo Diamond Rings',
-            'Three Stone Diamond Rings',
-            'Lab Grown Diamond Rings',
-            'All Engagement Rings'
-          ]
-        },
-        {
-          title: 'DIAMOND CUT',
-          items: ['Round', 'Oval', 'Emerald', 'Pear', 'Other']
-        }
-      ],
-      featured: [
-        { title: 'Yellow Gold Engagement Rings', link: '#' },
-        { title: 'Three Stone Engagement Rings', link: '#' }
-      ]
-    },
-    {
-      name: 'DIAMOND JEWELLERY',
-      columns: [
-        {
-          title: 'JEWELLERY TYPE',
-          items: [
-            'Diamond Eternity Rings',
-            'Diamond Dress Rings',
-            'Diamond Pendants',
-            'Diamond Bracelets',
-            'Diamond Bangles',
-            'Diamond Earrings',
-            'Diamond Necklets',
-            'All Diamond Jewellery'
-          ]
-        },
-        {
-          title: 'GEMSTONE TYPE',
-          items: ['Diamond', 'Sapphire', 'Emerald', 'Ruby', 'Pearl', 'All Gemstone Jewellery']
-        }
-      ],
-      featured: [
-        { title: 'Diamond Pendants', link: '#' },
-        { title: 'Diamond Eternity Rings', link: '#' }
-      ]
-    },
-    {
-      name: 'WEDDING RINGS',
-      columns: [
-        {
-          title: 'LADIES WEDDING RINGS',
-          items: ['Diamond Rings', 'White Gold Rings', 'Yellow Gold Rings', 'Platinum Rings']
-        },
-        {
-          title: 'GENTS WEDDING RINGS',
-          items: ['White Gold Rings', 'Yellow Gold Rings', 'Platinum Rings', 'All Wedding Rings']
-        }
-      ],
-      featured: [
-        { title: 'Diamond Wedding Rings', link: '#' },
-        { title: 'Plain Wedding Bands', link: '#' }
-      ]
-    },
-    {
-      name: 'GOLD JEWELLERY',
-      columns: [
-        {
-          title: null,
-          items: ['Gold Pendants', 'Gold Bracelets', 'Gold Bangles', 'Gold Earrings', 'Gold Necklets']
-        },
-        {
-          title: null,
-          items: ['Gold Rings', 'Gold Chains', 'All Gold Jewellery']
-        }
-      ],
-      featured: [
-        { title: 'Gold Pendants', link: '#' },
-        { title: 'Gold Earrings', link: '#' }
-      ]
-    },
-    {
-      name: 'SILVER JEWELLERY',
-      columns: [
-        {
-          title: null,
-          items: ['Silver Rings', 'Silver Pendants', 'Silver Bracelets']
-        },
-        {
-          title: null,
-          items: ['Silver Earrings', 'Silver Necklets', 'All Silver Jewellery']
-        }
-      ],
-      featured: [
-        { title: 'Silver Pendants', link: '#' },
-        { title: 'Silver Earrings', link: '#' }
-      ]
-    }
-  ]);
+  const [navItems, setNavItems] = useState([]);
 
   // Fetch navigation from backend
   useEffect(() => {
@@ -220,7 +119,7 @@ const Header = ({ isHome = true }) => {
         }
       } catch (error) {
         console.error('Error fetching navigation:', error);
-        // Keep default navItems on error
+        setNavItems([]);
       }
     };
     fetchNavigation();

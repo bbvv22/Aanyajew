@@ -35,7 +35,7 @@ const ReviewsAdmin = () => {
         try {
             const [reviewsRes, productsRes] = await Promise.all([
                 axios.get(`${backendUrl}/api/admin/reviews`, { headers: getAuthHeader() }),
-                axios.get(`${backendUrl}/api/admin/products`, { headers: getAuthHeader() })
+                axios.get(`${backendUrl}/api/admin/products/summary`, { headers: getAuthHeader() })
             ]);
             setReviews(reviewsRes.data);
             setProducts(productsRes.data);

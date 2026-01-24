@@ -17,11 +17,10 @@ const CategoryPage = () => {
         const fetchProducts = async () => {
             try {
                 const backendUrl = process.env.REACT_APP_BACKEND_URL || "http://localhost:8006";
-                const response = await axios.get(`${backendUrl}/api/products`);
-                const filtered = response.data.filter((p) =>
-                    (p.category || "").trim().toLowerCase() === decodedCategory.trim().toLowerCase()
+                const response = await axios.get(
+                    `${backendUrl}/api/products?category=${encodeURIComponent(decodedCategory)}&limit=500`
                 );
-                setProducts(filtered);
+                setProducts(response.data);
             } catch (error) {
                 console.error("Error fetching products:", error);
             } finally {
@@ -85,7 +84,10 @@ const CategoryPage = () => {
                                             type="radio"
                                             name="price"
                                             checked={priceRange[0] === 0 && priceRange[1] === 1000000}
-                                            onChange={() => setPriceRange([0, 1000000])}
+                                            onChange={() => {
+                                                setPriceRange([0, 1000000]);
+                                                setShowFilters(false);
+                                            }}
                                             className="text-[#c4ad94]"
                                         />
                                         <span className="text-sm text-gray-600">All Prices</span>
@@ -95,7 +97,10 @@ const CategoryPage = () => {
                                             type="radio"
                                             name="price"
                                             checked={priceRange[0] === 0 && priceRange[1] === 500}
-                                            onChange={() => setPriceRange([0, 500])}
+                                            onChange={() => {
+                                                setPriceRange([0, 500]);
+                                                setShowFilters(false);
+                                            }}
                                             className="text-[#c4ad94]"
                                         />
                                         <span className="text-sm text-gray-600">Under ₹500</span>
@@ -105,7 +110,10 @@ const CategoryPage = () => {
                                             type="radio"
                                             name="price"
                                             checked={priceRange[0] === 500 && priceRange[1] === 1000}
-                                            onChange={() => setPriceRange([500, 1000])}
+                                            onChange={() => {
+                                                setPriceRange([500, 1000]);
+                                                setShowFilters(false);
+                                            }}
                                             className="text-[#c4ad94]"
                                         />
                                         <span className="text-sm text-gray-600">₹500 - ₹1,000</span>
@@ -115,7 +123,10 @@ const CategoryPage = () => {
                                             type="radio"
                                             name="price"
                                             checked={priceRange[0] === 1000 && priceRange[1] === 5000}
-                                            onChange={() => setPriceRange([1000, 5000])}
+                                            onChange={() => {
+                                                setPriceRange([1000, 5000]);
+                                                setShowFilters(false);
+                                            }}
                                             className="text-[#c4ad94]"
                                         />
                                         <span className="text-sm text-gray-600">₹1,000 - ₹5,000</span>
@@ -125,7 +136,10 @@ const CategoryPage = () => {
                                             type="radio"
                                             name="price"
                                             checked={priceRange[0] === 5000 && priceRange[1] === 10000}
-                                            onChange={() => setPriceRange([5000, 10000])}
+                                            onChange={() => {
+                                                setPriceRange([5000, 10000]);
+                                                setShowFilters(false);
+                                            }}
                                             className="text-[#c4ad94]"
                                         />
                                         <span className="text-sm text-gray-600">Over ₹5,000</span>

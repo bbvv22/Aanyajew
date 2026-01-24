@@ -57,7 +57,7 @@ const CreatePurchaseOrderModal = ({ isOpen, onClose, onPOCreated }) => {
     const fetchProducts = async () => {
         setProductsLoading(true);
         try {
-            const response = await axios.get(`${backendUrl}/api/admin/products`, {
+            const response = await axios.get(`${backendUrl}/api/admin/products/summary`, {
                 headers: getAuthHeader()
             });
             setProducts(response.data);
@@ -143,8 +143,8 @@ const CreatePurchaseOrderModal = ({ isOpen, onClose, onPOCreated }) => {
     };
 
     const filteredProducts = products.filter(p =>
-        p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        p.sku.toLowerCase().includes(searchTerm.toLowerCase())
+        (p.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (p.sku || '').toLowerCase().includes(searchTerm.toLowerCase())
     );
 
     if (!isOpen) return null;

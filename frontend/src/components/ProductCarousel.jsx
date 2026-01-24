@@ -12,7 +12,7 @@ const ProductCarousel = () => {
     const fetchProducts = async () => {
       try {
         const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8006';
-        const response = await axios.get(`${backendUrl}/api/products?category=Engagement Rings`);
+        const response = await axios.get(`${backendUrl}/api/products/summary?category=Engagement Rings&limit=20`);
         setProducts(response.data);
       } catch (error) {
         console.error("Error fetching products:", error);

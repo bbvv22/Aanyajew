@@ -9,7 +9,7 @@ const InstagramSection = () => {
     const fetchInstagramImages = async () => {
       try {
         const backendUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8006';
-        const response = await axios.get(`${backendUrl}/api/products`);
+        const response = await axios.get(`${backendUrl}/api/products/summary?limit=50`);
         const products = response.data;
 
         // Pick 5 random images
